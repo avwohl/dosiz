@@ -65,12 +65,17 @@ jobs:
           echo "dosemu output: $out"
           echo "$out" | grep -q 'alloc-free-alloc-same'
 
-      - name: Baseline (DPMI currently reports absent)
+      - name: DPMI stage 2: detection reports present
         run: |
-          # Regression guard: flip to dpmi=present when DPMI host lands.
           out=$(build/dosemu tests/DPMI_PROBE.COM 2>/dev/null)
           echo "dosemu output: $out"
-          echo "$out" | grep -q 'dpmi=absent'
+          echo "$out" | grep -q 'dpmi=present'
+
+      - name: DPMI stage 2: switch entry returns failure (expected)
+        run: |
+          out=$(build/dosemu tests/DPMI_STAGE2.COM 2>/dev/null)
+          echo "dosemu output: $out"
+          echo "$out" | grep -q 'dpmi-stage2=ok'
 
       - name: Baseline (INT 31h denial stub returns CF=1 / AX=8001h)
         run: |

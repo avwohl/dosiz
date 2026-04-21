@@ -571,6 +571,47 @@ void return_error(uint16_t dos_err) {
   set_cf(true);
 }
 
+// INT 2Fh multiplex: handle the DPMI-present probe (AX=1687h) so programs
+// see a DPMI host.  Everything else falls through to dosbox's default
+// handler via IRET without modification.  When real DPMI lands, the entry
+// point returned here will transition to protected mode; until then, our
+// dosemu_dpmi_entry callback returns AX=8001h ("unsupported function")
+// with CF=1 so the client fails the mode switch gracefully.
+uint16_t                s_dpmi_entry_seg    = 0;
+uint16_t                s_dpmi_entry_off    = 0;
+
+Bitu dosemu_dpmi_entry() {
+  // Called via FAR CALL from real-mode DPMI clients after AX=1687h.
+  // Client expects on return: AX=0 for successful mode switch, else non-zero.
+  // We always return failure (stage 2 of the DPMI plan).
+  reg_ax = 0x8001;
+  set_cf(true);
+  return CBRET_NONE;
+}
+
+Bitu dosemu_int2f() {
+  if (reg_ax == 0x1687) {
+    // DPMI detection response:
+    //   AX = 0    (DPMI host present)
+    //   BX = 0    (flags: bit 0 = 32-bit DPMI available -- we lie "no")
+    //   CL = 3    (CPU type: 386)
+    //   DH:DL = 0:90h  (DPMI 0.90 -- what DJGPP expects)
+    //   SI = 1    (paragraphs of private data required by host)
+    //   ES:DI = real-mode entry-point for the switch.
+    reg_ax = 0;
+    reg_bx = 0;
+    reg_cl = 3;
+    reg_dh = 0;
+    reg_dl = 0x5A;      // 0x5A = 90
+    reg_si = 1;
+    SegSet16(es, s_dpmi_entry_seg);
+    reg_di = s_dpmi_entry_off;
+    return CBRET_NONE;
+  }
+  // Leave AX unchanged for sub-functions we don't handle; IRET returns.
+  return CBRET_NONE;
+}
+
 // INT 16h (BIOS keyboard services).  Programs like deltree/debug read user
 // input this way rather than via INT 21h.  We plumb host stdin to AH=00
 // (wait for key) and AH=01 (check for key).  A single-byte peek buffer
@@ -1484,6 +1525,18 @@ void dosemu_startup() {
   CALLBACK_HandlerObject int31_cb;
   int31_cb.Install(&dosemu_int31, CB_IRET, "dosemu Int 31 (DPMI not yet)");
   int31_cb.Set_RealVec(0x31);
+
+  // INT 2Fh handler for DPMI detection (stage 2).  Reports DPMI present
+  // with a real-mode entry point that currently fails the mode switch.
+  CALLBACK_HandlerObject dpmi_entry_cb;
+  dpmi_entry_cb.Install(&dosemu_dpmi_entry, CB_RETF,
+                        "dosemu DPMI entry (stage 2 stub)");
+  const RealPt entry_addr = dpmi_entry_cb.Get_RealPointer();
+  s_dpmi_entry_seg = static_cast<uint16_t>((entry_addr >> 16) & 0xFFFF);
+  s_dpmi_entry_off = static_cast<uint16_t>(entry_addr & 0xFFFF);
+  CALLBACK_HandlerObject int2f_cb;
+  int2f_cb.Install(&dosemu_int2f, CB_IRET, "dosemu Int 2F (DPMI detect)");
+  int2f_cb.Set_RealVec(0x2F);
 
   // INT 16h keyboard -- plumbed to host stdin so interactive DOS programs
   // (deltree, debug, etc.) can read a keypress via the BIOS path.
