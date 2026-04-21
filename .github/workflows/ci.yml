@@ -77,8 +77,6 @@ jobs:
           default_mode = text
           EOF
           build/dosemu "$workdir/write.cfg" 2>/dev/null
-          # In text mode the \r before \n must be stripped.  grep -P ensures
-          # the shell literal interprets the escapes as expected.
           if grep -qU $'\r' "$workdir/WROTE.TXT"; then
             echo "FAIL: WROTE.TXT still contains CR in text mode"
             xxd "$workdir/WROTE.TXT"
@@ -86,6 +84,37 @@ jobs:
           fi
           grep -q 'dosemu-wrote-ok' "$workdir/WROTE.TXT"
           grep -q 'from-cfg'        "$workdir/WROTE.TXT"
+
+      - name: Smoke (.cfg exact file mapping redirects host path)
+        run: |
+          workdir=$(mktemp -d)
+          cat > "$workdir/exact.cfg" <<EOF
+          program = $GITHUB_WORKSPACE/tests/WRITE.COM
+          args = exact-map
+          drive_C = $workdir
+          WROTE.TXT = $workdir/renamed.out text
+          EOF
+          build/dosemu "$workdir/exact.cfg" 2>/dev/null
+          # Must land in renamed.out, not WROTE.TXT.
+          test -f "$workdir/renamed.out"
+          test ! -f "$workdir/WROTE.TXT"
+          grep -q 'exact-map' "$workdir/renamed.out"
+
+      - name: Smoke (.cfg wildcard mapping toggles text mode)
+        run: |
+          workdir=$(mktemp -d)
+          cat > "$workdir/wild.cfg" <<EOF
+          program = $GITHUB_WORKSPACE/tests/WRITE.COM
+          args = wild-map
+          drive_C = $workdir
+          *.TXT = text
+          EOF
+          build/dosemu "$workdir/wild.cfg" 2>/dev/null
+          if grep -qU $'\r' "$workdir/WROTE.TXT"; then
+            echo "FAIL: wildcard *.TXT=text did not strip CR"
+            xxd "$workdir/WROTE.TXT"
+            exit 1
+          fi
 
       - name: Smoke (run WRITE.COM, verify file I/O + command tail)
         run: |

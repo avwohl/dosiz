@@ -107,6 +107,9 @@ char                        s_current_drive = 'C';
 // DOS program classic CRLF semantics while the host file stays Unix-LF.
 bool                        s_default_text_mode = false;
 
+// Per-file / per-pattern mappings from cfg.file_mappings.
+std::vector<FileMapping>    s_file_mappings;
+
 // --- Host <-> guest helpers -----------------------------------------------
 
 // Read a NUL-terminated DOS path from guest memory at seg:off.
@@ -142,6 +145,81 @@ std::string dos_to_host(const std::string &dos_path) {
   if (path.empty()) return it->second;
   if (path.front() == '/') return it->second + path;
   return it->second + "/" + path;
+}
+
+std::string upper(const std::string &s) {
+  std::string u = s;
+  for (auto &c : u) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+  return u;
+}
+
+// Simple case-insensitive glob with * and ? — enough for DOS patterns.
+bool glob_match(const std::string &name_u, const std::string &pat_u) {
+  size_t ni = 0, pi = 0;
+  size_t star_pi = std::string::npos, star_ni = 0;
+  while (ni < name_u.size()) {
+    if (pi < pat_u.size() && (pat_u[pi] == '?' || pat_u[pi] == name_u[ni])) {
+      ++ni; ++pi;
+    } else if (pi < pat_u.size() && pat_u[pi] == '*') {
+      star_pi = pi++;
+      star_ni = ni;
+    } else if (star_pi != std::string::npos) {
+      pi = star_pi + 1;
+      ni = ++star_ni;
+    } else {
+      return false;
+    }
+  }
+  while (pi < pat_u.size() && pat_u[pi] == '*') ++pi;
+  return pi == pat_u.size();
+}
+
+bool has_wildcard(const std::string &s) {
+  return s.find_first_of("*?") != std::string::npos;
+}
+
+// Extract the filename from a DOS path (strip drive letter and directories).
+std::string basename_dos(const std::string &dos_path) {
+  std::string p = dos_path;
+  if (p.size() >= 2 && p[1] == ':') p = p.substr(2);
+  const size_t slash = p.find_last_of("\\/");
+  if (slash != std::string::npos) p = p.substr(slash + 1);
+  return p;
+}
+
+// Resolve a DOS path against cfg.file_mappings.  An exact (non-wildcard)
+// match on the basename replaces both the host path and the mode.  A
+// wildcard match only overrides the mode -- the host path still comes from
+// the drive mount.  Falls back to dos_to_host() + s_default_text_mode.
+struct Resolved {
+  std::string host_path;
+  bool        text_mode;
+};
+
+Resolved resolve_path(const std::string &dos_path) {
+  const std::string base_u = upper(basename_dos(dos_path));
+
+  auto mode_to_text = [](const FileMapping &m, bool default_text) {
+    if (m.mode == FileMode::Text)   return true;
+    if (m.mode == FileMode::Binary) return false;
+    return default_text;
+  };
+
+  // Pass 1: exact (non-wildcard) match.
+  for (const auto &m : s_file_mappings) {
+    if (!has_wildcard(m.pattern) && upper(m.pattern) == base_u) {
+      return {m.host_path, mode_to_text(m, s_default_text_mode)};
+    }
+  }
+  // Pass 2: wildcard -- first match wins, mode-only override.
+  bool text_mode = s_default_text_mode;
+  for (const auto &m : s_file_mappings) {
+    if (has_wildcard(m.pattern) && glob_match(base_u, upper(m.pattern))) {
+      text_mode = mode_to_text(m, s_default_text_mode);
+      break;
+    }
+  }
+  return {dos_to_host(dos_path), text_mode};
 }
 
 // Allocate the next free DOS handle for a given host fd.
@@ -189,11 +267,11 @@ Bitu dosemu_int21() {
     }
 
     case 0x3C: {  // Create file; CX=attr, DS:DX=path.  Returns handle in AX.
-      const std::string dos_path  = read_dos_string(SegValue(ds), reg_dx);
-      const std::string host_path = dos_to_host(dos_path);
-      int fd = ::open(host_path.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
+      const std::string dos_path = read_dos_string(SegValue(ds), reg_dx);
+      const Resolved    r        = resolve_path(dos_path);
+      int fd = ::open(r.host_path.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
       if (fd < 0) { return_error(0x05); break; }
-      int h = allocate_handle(fd, s_default_text_mode);
+      int h = allocate_handle(fd, r.text_mode);
       if (h < 0) { ::close(fd); return_error(0x04); break; }
       reg_ax = static_cast<uint16_t>(h);
       set_cf(false);
@@ -201,17 +279,17 @@ Bitu dosemu_int21() {
     }
 
     case 0x3D: {  // Open file; AL=mode, DS:DX=path.  Returns handle in AX.
-      const std::string dos_path  = read_dos_string(SegValue(ds), reg_dx);
-      const std::string host_path = dos_to_host(dos_path);
+      const std::string dos_path = read_dos_string(SegValue(ds), reg_dx);
+      const Resolved    r        = resolve_path(dos_path);
       int flags = O_RDONLY;
       switch (reg_al & 0x07) {
         case 0: flags = O_RDONLY; break;
         case 1: flags = O_WRONLY; break;
         case 2: flags = O_RDWR;   break;
       }
-      int fd = ::open(host_path.c_str(), flags);
+      int fd = ::open(r.host_path.c_str(), flags);
       if (fd < 0) { return_error(0x02); break; }
-      int h = allocate_handle(fd, s_default_text_mode);
+      int h = allocate_handle(fd, r.text_mode);
       if (h < 0) { ::close(fd); return_error(0x04); break; }
       reg_ax = static_cast<uint16_t>(h);
       set_cf(false);
@@ -639,6 +717,7 @@ int run_program(const dosemu::Config &cfg) {
   s_drives.clear();
   s_drive_cwd.clear();
   s_mem_highwater = 0x2000;
+  s_file_mappings = cfg.file_mappings;
 
   // Populate drives from .cfg; fall back to C: = process CWD when empty.
   for (const auto &d : cfg.drives) s_drives[d.letter] = d.host_path;

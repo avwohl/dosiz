@@ -112,22 +112,32 @@ bool load_config_file(const std::string &path, Config &cfg) {
       }
       if (!tok.empty()) cfg.args.push_back(tok);
     } else {
-      // Treat as file mapping: PATTERN = path [mode]
+      // Treat as file mapping.  Accepted value forms:
+      //   PATH              -> host path, default mode
+      //   PATH text|binary  -> host path + explicit mode
+      //   text|binary|auto  -> mode-only override (no path; used with
+      //                        wildcards like "*.TXT = text")
       FileMapping m;
-      m.pattern = key;
-      m.mode = cfg.default_mode;
+      m.pattern     = key;
+      m.mode        = cfg.default_mode;
       m.eol_convert = cfg.default_eol_convert;
 
-      size_t sp = val.find_last_of(' ');
-      if (sp != std::string::npos) {
-        std::string tail = val.substr(sp + 1);
-        if (tail == "text" || tail == "binary" || tail == "auto") {
-          m.mode = parse_mode(tail);
-          if (m.mode == FileMode::Binary) m.eol_convert = false;
-          val = trim(val.substr(0, sp));
+      if (val == "text" || val == "binary" || val == "auto") {
+        m.mode = parse_mode(val);
+        if (m.mode == FileMode::Binary) m.eol_convert = false;
+        // host_path stays empty -> wildcard mode-only override.
+      } else {
+        size_t sp = val.find_last_of(' ');
+        if (sp != std::string::npos) {
+          std::string tail = val.substr(sp + 1);
+          if (tail == "text" || tail == "binary" || tail == "auto") {
+            m.mode = parse_mode(tail);
+            if (m.mode == FileMode::Binary) m.eol_convert = false;
+            val = trim(val.substr(0, sp));
+          }
         }
+        m.host_path = val;
       }
-      m.host_path = val;
       cfg.file_mappings.push_back(m);
     }
   }

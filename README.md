@@ -25,10 +25,18 @@ handled entirely by C++ host code. Currently implemented:
 	3E  close handle       48  allocate (bump)    49  free (no-op)
 	4A  resize (stub)      4C  exit
 
-PSP command tail at offset 80h is populated from argv. Drive mounts
-(`drive_C = /host/dir`, `drive_D = /other`) and text-mode translation
-(`default_mode = text`) come from a `.cfg` file; text mode strips the CR
-byte from DOS CRLF on write and expands host LF to CRLF on read so files
+PSP command tail at offset 80h is populated from argv. Drive mounts and
+per-file / per-pattern mappings come from a `.cfg` file:
+
+	program        = PROG.EXE
+	args           = /q /v
+	drive_C        = /home/me/dos
+	drive_D        = /mnt/sources
+	default_mode   = text           # all files: CRLF<->LF
+	HELLO.TXT      = /real/path/hello_long_name.txt text
+	*.BAS          = text           # mode-only wildcard override
+
+Text mode strips CR on write and expands LF to CRLF on read so files
 live on the host in Unix format. No subprocess, no dosbox shell, no
 generated dosbox.conf.
 
