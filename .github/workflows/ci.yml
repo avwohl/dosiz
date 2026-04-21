@@ -65,6 +65,13 @@ jobs:
           echo "dosemu output: $out"
           echo "$out" | grep -q 'alloc-free-alloc-same'
 
+      - name: Baseline (DPMI currently reports absent)
+        run: |
+          # Regression guard: flip to dpmi=present when DPMI host lands.
+          out=$(build/dosemu tests/DPMI_PROBE.COM 2>/dev/null)
+          echo "dosemu output: $out"
+          echo "$out" | grep -q 'dpmi=absent'
+
       - name: Smoke (.cfg drives + default_mode=text)
         run: |
           workdir=$(mktemp -d)
