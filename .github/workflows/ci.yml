@@ -390,7 +390,13 @@ jobs:
           # dosemu reports `LE fixup:` lines to stderr; we assert the
           # fixup resolved to host_seg[obj2]*16 + 0, proving the walker
           # read fixup_page_table + fixup_record_table correctly.
+          # Regenerate and assert the committed binary is bit-identical
+          # to what the current generator emits -- catches accidental
+          # generator edits that weren't re-committed with a fresh
+          # LE_MIN.EXE.
+          cp tests/LE_MIN.EXE "$RUNNER_TEMP/le_min_committed.exe"
           python3 tests/gen_le_min.py
+          diff -q "$RUNNER_TEMP/le_min_committed.exe" tests/LE_MIN.EXE
           out=$(build/dosemu tests/LE_MIN.EXE 2>&1)
           echo "dosemu output:"
           echo "$out"
