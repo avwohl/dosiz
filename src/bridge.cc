@@ -977,8 +977,162 @@ Bitu dosemu_dpmi_entry() {
   return CBRET_NONE;
 }
 
+// XMS driver entry point (callable as a far call by clients that
+// obtained the address via INT 2F AX=4310h).  Dispatches on AH:
+//   00h  Get XMS version     -> AX=0x0300 (XMS 3.0), BX=driver ver,
+//                              DX=0 (no HMA).
+//   08h  Query free XMS      -> AX=largest-free-KB, DX=total-KB
+//   09h  Allocate EMB        -> AX=1 (OK), DX=handle (we hand back
+//                              a pm_alloc block)
+//   0Ah  Free EMB            -> AX=1, frees the block
+//   0Bh  Move EMB            -> AX=1, copies bytes
+//   0Ch  Lock EMB            -> AX=1, DX:BX=linear address
+//   0Dh  Unlock EMB          -> AX=1
+//   0Eh  Get EMB info        -> AX=1, BH=#handles, DX=size
+// Everything else: AX=0 (error), BL=80h (function not implemented).
+// Enough for DOS/4GW's init to succeed -- it uses XMS for its
+// transfer buffer and for swap.  We map XMS handles directly to
+// pm_arena linear addresses.
+std::map<uint16_t, uint32_t> s_xms_handles;   // handle -> linear base
+std::map<uint16_t, uint32_t> s_xms_sizes;     // handle -> size (KB)
+uint16_t s_xms_next_handle = 1;
+
+Bitu dosemu_xms_driver() {
+  const uint8_t fn = reg_ah;
+  switch (fn) {
+    case 0x00:
+      reg_ax = 0x0300;   // XMS 3.0
+      reg_bx = 0;
+      reg_dx = 0;
+      return CBRET_NONE;
+    case 0x08: {
+      // Free extended memory in KB.  pm_arena covers [1MB, memsize).
+      pm_init();
+      const uint32_t total_kb = (s_pm_end - PM_ARENA_START) / 1024u;
+      reg_ax = total_kb & 0xFFFF;
+      reg_dx = total_kb & 0xFFFF;
+      reg_bl = 0;
+      return CBRET_NONE;
+    }
+    case 0x09: {
+      // Allocate EMB: DX = size in KB.
+      const uint32_t bytes = static_cast<uint32_t>(reg_dx) * 1024u;
+      const uint32_t base  = pm_alloc(bytes ? bytes : 4096u);
+      if (base == 0) {
+        reg_ax = 0; reg_bl = 0xA0;   // all extended memory allocated
+        return CBRET_NONE;
+      }
+      const uint16_t h = s_xms_next_handle++;
+      s_xms_handles[h] = base;
+      s_xms_sizes[h]   = reg_dx;
+      reg_ax = 1;
+      reg_dx = h;
+      return CBRET_NONE;
+    }
+    case 0x0A: {
+      auto it = s_xms_handles.find(reg_dx);
+      if (it == s_xms_handles.end()) {
+        reg_ax = 0; reg_bl = 0xA2;  // invalid handle
+        return CBRET_NONE;
+      }
+      pm_free(it->second);
+      s_xms_handles.erase(it);
+      s_xms_sizes.erase(reg_dx);
+      reg_ax = 1;
+      return CBRET_NONE;
+    }
+    case 0x0B: {
+      // Move memory: DS:SI = EMM struct (length, srch, srcoff,
+      // dsth, dstoff).  For pm-backed handles or conventional segs
+      // (handle = 0), compute physical addresses and memcpy.
+      const PhysPt s = SegPhys(ds) + reg_si;
+      const uint32_t len  = mem_readd(s + 0);
+      const uint16_t sh   = mem_readw(s + 4);
+      const uint32_t soff = mem_readd(s + 6);
+      const uint16_t dh   = mem_readw(s + 10);
+      const uint32_t doff = mem_readd(s + 12);
+      uint32_t slin, dlin;
+      if (sh == 0) slin = soff;
+      else {
+        auto it = s_xms_handles.find(sh);
+        if (it == s_xms_handles.end()) { reg_ax = 0; reg_bl = 0xA3; return CBRET_NONE; }
+        slin = it->second + soff;
+      }
+      if (dh == 0) dlin = doff;
+      else {
+        auto it = s_xms_handles.find(dh);
+        if (it == s_xms_handles.end()) { reg_ax = 0; reg_bl = 0xA5; return CBRET_NONE; }
+        dlin = it->second + doff;
+      }
+      for (uint32_t i = 0; i < len; ++i)
+        mem_writeb(dlin + i, mem_readb(slin + i));
+      reg_ax = 1;
+      return CBRET_NONE;
+    }
+    case 0x0C: {
+      // Lock EMB: DX = handle.  Return DX:BX = linear.
+      auto it = s_xms_handles.find(reg_dx);
+      if (it == s_xms_handles.end()) {
+        reg_ax = 0; reg_bl = 0xA2; return CBRET_NONE;
+      }
+      reg_dx = (it->second >> 16) & 0xFFFF;
+      reg_bx = it->second & 0xFFFF;
+      reg_ax = 1;
+      return CBRET_NONE;
+    }
+    case 0x0D:
+      reg_ax = 1;   // Unlock: no-op (we don't page)
+      return CBRET_NONE;
+    case 0x0E: {
+      auto it = s_xms_sizes.find(reg_dx);
+      if (it == s_xms_sizes.end()) {
+        reg_ax = 0; reg_bl = 0xA2; return CBRET_NONE;
+      }
+      reg_bh = 1;       // 1 lock count (pretend)
+      reg_bl = 0;       // 0 free handles (don't care)
+      reg_dx = it->second & 0xFFFF;
+      reg_ax = 1;
+      return CBRET_NONE;
+    }
+    default:
+      reg_ax = 0;
+      reg_bl = 0x80;    // function not implemented
+      return CBRET_NONE;
+  }
+}
+
+uint16_t s_xms_driver_seg = 0;
+uint16_t s_xms_driver_off = 0;
+
 Bitu dosemu_int2f() {
+  // INT 2F AX=1600..160A: Windows enhanced-mode detection.
+  // AL=0 means "Windows not running".  Without an explicit response,
+  // DOS/4GW's runtime sees whatever AL was on entry and misbehaves.
+  // Narrow range so 0x16xx unrelated calls (esp. 0x1687 DPMI probe)
+  // don't fall into this bucket.
+  if (reg_ax >= 0x1600 && reg_ax <= 0x160A) {
+    reg_ax = 0;
+    return CBRET_NONE;
+  }
+  if (reg_ax == 0x4300) {
+    // XMS installation check: AL=80h = installed.
+    reg_al = 0x80;
+    return CBRET_NONE;
+  }
+  if (reg_ax == 0x4310) {
+    // Get XMS driver entry point -> ES:BX
+    SegSet16(es, s_xms_driver_seg);
+    reg_bx = s_xms_driver_off;
+    return CBRET_NONE;
+  }
   if (reg_ax == 0x1687) {
+    // Some DOS extenders (DOS/4GW, DOS/16M, PMODE/W) bring their own
+    // protected-mode machinery and work better when we report "no
+    // DPMI".  DOSEMU_NO_DPMI=1 suppresses the DPMI-present response.
+    if (std::getenv("DOSEMU_NO_DPMI")) {
+      reg_ax = 0xFFFF;        // DPMI not present
+      return CBRET_NONE;
+    }
     // DPMI detection response:
     //   AX = 0    (DPMI host present)
     //   BX = 1    (flags: bit 0 = 32-bit DPMI available)
@@ -3418,6 +3572,44 @@ Bitu dosemu_int21() {
                    mem_readb(parent_env_seg * 16u + i));
       }
 
+      // After the env-vars section (terminated by a double-NUL),
+      // DOS stores a uint16 argc followed by argv[0] as ASCIIZ --
+      // this is the CHILD's executable path, which DOS/4GW reads
+      // to find the LE binary it's meant to load.  The copy above
+      // preserved the PARENT's argv[0], which pointed DOS/4GW at
+      // the wrong file (the parent rather than the child, giving
+      // "not a DOS/16M executable 'C:\WCC386.EXE'").
+      //
+      // Scan for the double-NUL terminator then overwrite argv[0].
+      {
+        const PhysPt base = child_env * 16u;
+        uint32_t i = 0;
+        for (; i + 1 < ENV_BYTES; ++i) {
+          if (mem_readb(base + i) == 0 && mem_readb(base + i + 1) == 0) {
+            i += 2;   // past the terminator
+            break;
+          }
+        }
+        // argc = 1
+        if (i + 2 <= ENV_BYTES) {
+          mem_writeb(base + i++, 1);
+          mem_writeb(base + i++, 0);
+        }
+        // argv[0] = uppercase "C:\<BASENAME>"
+        const size_t slash = dos_path.find_last_of("/\\:");
+        std::string basename = (slash == std::string::npos)
+                               ? dos_path
+                               : dos_path.substr(slash + 1);
+        for (auto &c : basename)
+          c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        std::string argv0 = "C:\\" + basename;
+        for (char c : argv0) {
+          if (i >= ENV_BYTES - 1) break;
+          mem_writeb(base + i++, static_cast<uint8_t>(c));
+        }
+        if (i < ENV_BYTES) mem_writeb(base + i, 0);
+      }
+
       // Build child PSP: INT 20h marker, top-of-memory, env pointer,
       // empty command tail.
       {
@@ -3429,9 +3621,21 @@ Bitu dosemu_int21() {
         mem_writeb(psp + 0x03, 0xA0);
         mem_writeb(psp + 0x2C, child_env & 0xFF);
         mem_writeb(psp + 0x2D, (child_env >> 8) & 0xFF);
-        // Command tail: empty
-        mem_writeb(psp + 0x80, 0);
-        mem_writeb(psp + 0x81, 0x0D);
+        // Copy command tail from the caller's parameter block.  The
+        // pblock's [+2..+5] is a far pointer to a DOS-formatted
+        // command tail: [len][tail bytes][0x0D].  DOS/4GW reads this
+        // from its PSP to discover what .EXE to load; an empty tail
+        // made it fall back to a filename-from-env path that errored
+        // with "not a DOS/16M executable".
+        const PhysPt pb = SegPhys(es) + reg_bx;
+        const uint16_t tail_off = mem_readw(pb + 2);
+        const uint16_t tail_seg = mem_readw(pb + 4);
+        const PhysPt tail_base = static_cast<PhysPt>(tail_seg) * 16u + tail_off;
+        const uint8_t tail_len = mem_readb(tail_base);
+        mem_writeb(psp + 0x80, tail_len);
+        for (uint8_t i = 0; i < tail_len && i < 127; ++i)
+          mem_writeb(psp + 0x81 + i, mem_readb(tail_base + 1 + i));
+        mem_writeb(psp + 0x81 + tail_len, 0x0D);
       }
 
       // Snapshot parent CPU state before switching to child.  The
@@ -4458,6 +4662,17 @@ void dosemu_startup() {
   CALLBACK_HandlerObject int2f_cb;
   int2f_cb.Install(&dosemu_int2f, CB_IRET, "dosemu Int 2F (DPMI detect)");
   int2f_cb.Set_RealVec(0x2F);
+
+  // XMS driver entry point -- returned to clients via INT 2F/4310h.
+  // Uses CB_RETF (far-call entry, ends with RETF) since XMS clients
+  // far-call the driver, not INT it.
+  CALLBACK_HandlerObject xms_cb;
+  xms_cb.Install(&dosemu_xms_driver, CB_RETF, "dosemu XMS driver");
+  {
+    const RealPt rp = xms_cb.Get_RealPointer();
+    s_xms_driver_seg = (rp >> 16) & 0xFFFF;
+    s_xms_driver_off = rp & 0xFFFF;
+  }
 
   // INT 16h keyboard -- plumbed to host stdin so interactive DOS programs
   // (deltree, debug, etc.) can read a keypress via the BIOS path.
