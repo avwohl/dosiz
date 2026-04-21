@@ -248,21 +248,17 @@ Ordered roughly by leverage / difficulty:
    `objects[tgt_obj-1].ldt_sel` into the selector field instead of
    writing 0. Should unblock any real LE binary that uses far
    function pointers or vtables.
-2. **Make wd.exe survive its first fault.** Catch-all exception
-   handler now installed for vectors 0x00..0x1F (commit 2087074):
-   client fault at `CS:EIP=0006f104` is reported cleanly instead
-   of dosbox E_Exit.  But the root cause of the fault is still
-   unclear.  Next steps:
-     (a) **Per-vector dispatch** so the handler knows which vector
-         fired.  Easy via PM_SHIM_SEG-style per-vector stubs that
-         pass the vector via an index.  Will also let the handler
-         parse the frame correctly (error-code vs no-error-code).
-     (b) **Root-cause the GP**.  Likely candidates: our entry
-         doesn't zero FS/GS (they hold stale RM values, invalid
-         as PM selectors), doesn't provide a TSS, doesn't set up
-         a PSP/env-block pointer in Watcom calling convention.
-         DOS4G/W's RM stub does all of this before PM entry;
-         our LE entry is too naive.
+2. **Make wd.exe survive its first fault.** Exception handlers
+   now installed, gate bitness now matches the entry obj's BIG
+   flag (2087074 + 63f0ef3).  wd.exe (16-bit LE) takes an
+   exception immediately after entry and the frame is all zeros
+   -- a cascading fault inside our handler, not a clean single
+   exception.  Per-vector dispatch was prototyped but exceeded
+   dosbox's CB_MAX=128; would need PM_SHIM_SEG-style shims
+   instead of more dosbox callbacks.  Root cause is likely a
+   mismatch between our naive PM entry and what DOS4G/W's RM stub
+   normally primes (FS/GS = 0, PSP/env/arg pointers, TSS, maybe
+   more).  No quick win here -- this is full DPMI-host territory.
 3. **Cross-build a DJGPP tiny hello** (separate toolchain). Might
    give us a COFF-in-MZ path that's easier than LE for some
    targets.
@@ -337,6 +333,8 @@ External-tool integration:
 ## Commits since the original handoff (1222c44)
 
 ```
+63f0ef3  LE: match exception-gate bitness to entry object's BIG flag
+c84de5b  WIP.md: LE catch-all exception handler landed
 2087074  LE: install catch-all exception handler for vectors 0x00..0x1F
 b593fa4  WIP.md: selector-bearing fixups landed; wd.exe diagnosis
 d21def3  LE loader: wire selector-bearing fixups + fix LE_MIN exit code
@@ -379,5 +377,5 @@ ffcdbff  DPMI stage 4 (subset): INT 31h AX=0400 + get/set segment base
 bfe1c76  DPMI stage 5 (32-bit): end-to-end fixture + IRETD callback stub
 ```
 
-38 commits from the session's start (`1222c44` "WIP.txt: handoff notes").
+40 commits from the session's start (`1222c44` "WIP.txt: handoff notes").
 All on main, all pushed.
