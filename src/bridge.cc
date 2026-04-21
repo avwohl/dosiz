@@ -2603,8 +2603,20 @@ Bitu dosemu_int31_bits32() {
 
 Bitu dosemu_int21() {
   if (std::getenv("DOSEMU_TRACE")) {
-    std::fprintf(stderr, "[trace] AH=%02x AL=%02x BX=%04x CX=%04x DX=%04x\n",
-                 reg_ah, reg_al, reg_bx, reg_cx, reg_dx);
+    // When the client is in 32-bit PM (s_int_gate_bits32) the high
+    // halves of EBX/ECX/EDX may carry meaningful data (Watcom's
+    // runtime, for instance, calls AH=FFh with partial 32-bit regs).
+    // Print the full dword view in PM, low-word only in RM/16-bit.
+    if (s_int_gate_bits32) {
+      std::fprintf(stderr,
+          "[trace] AH=%02x AL=%02x EBX=%08x ECX=%08x EDX=%08x "
+          "ESI=%08x EDI=%08x\n",
+          reg_ah, reg_al, reg_ebx, reg_ecx, reg_edx, reg_esi, reg_edi);
+    } else {
+      std::fprintf(stderr,
+          "[trace] AH=%02x AL=%02x BX=%04x CX=%04x DX=%04x\n",
+          reg_ah, reg_al, reg_bx, reg_cx, reg_dx);
+    }
   }
   switch (reg_ah) {
 
