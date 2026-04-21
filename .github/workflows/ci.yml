@@ -116,6 +116,22 @@ jobs:
             exit 1
           fi
 
+      - name: Smoke (findfirst/findnext + 8.3 mangling)
+        run: |
+          workdir=$(mktemp -d)
+          touch "$workdir/hello.tst" "$workdir/world.tst" \
+                "$workdir/thirdfile.tst" "$workdir/ignored.bin"
+          cat > "$workdir/run.cfg" <<EOF
+          program = $GITHUB_WORKSPACE/tests/LISTDIR.COM
+          drive_C = $workdir
+          EOF
+          out=$(build/dosemu "$workdir/run.cfg" 2>/dev/null)
+          echo "$out"
+          echo "$out" | grep -q '^HELLO\.TST$'
+          echo "$out" | grep -q '^WORLD\.TST$'
+          echo "$out" | grep -q '^THIRDF~1\.TST$'
+          echo "$out" | grep -vq '^IGNORED'
+
       - name: Smoke (run WRITE.COM, verify file I/O + command tail)
         run: |
           workdir=$(mktemp -d)

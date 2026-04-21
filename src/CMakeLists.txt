@@ -45,6 +45,15 @@ add_executable(dosemu
   bridge.cc
 )
 
+# dosbox-staging searches <exe_dir>/resources for shaders, fonts, and
+# translation files.  Symlink the staging build's resources dir next to
+# our executable so these are found without needing a full install.
+add_custom_command(TARGET dosemu POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E create_symlink
+          ${DB_BUILD}/resources
+          $<TARGET_FILE_DIR:dosemu>/resources
+  VERBATIM)
+
 target_include_directories(dosemu PRIVATE
   ${DB}/include
   ${DB_BUILD}                    # generated config.h

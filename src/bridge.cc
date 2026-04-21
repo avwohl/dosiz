@@ -34,13 +34,26 @@
 #include "programs.h"
 #include "loguru.hpp"
 
+// Four helpers in dosbox-staging's sdlmain.cpp that were file-local.  We
+// patched them to external linkage so dosemu can drive the pre-StartUp
+// init path without duplicating 300+ lines of [sdl] section setup.
+class Section_prop;
+void config_add_sdl();
+void messages_add_sdl();
+void messages_add_command_line();
+Section_prop *get_sdl_section();
+void DOS_Locale_AddMessages();
+void RENDER_AddMessages();
+
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <dirent.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <ctime>
 #include <map>
 #include <memory>
 #include <string>
@@ -109,6 +122,25 @@ bool                        s_default_text_mode = false;
 
 // Per-file / per-pattern mappings from cfg.file_mappings.
 std::vector<FileMapping>    s_file_mappings;
+
+// Disk Transfer Area.  DOS programs set this via AH=1Ah and read results of
+// findfirst/findnext from it.  Default is PSP:0080h (128-byte area).
+uint32_t                    s_dta_linear = PSP_SEG * 16 + 0x80;
+
+// State for AH=4Eh/4Fh findfirst/findnext.  Keyed by DTA linear address so
+// a program can juggle multiple DTAs.  DIR* stays open across findnext
+// calls and closes when the scan runs out or the state is evicted.
+struct FindState {
+  DIR*        dir;
+  std::string host_dir;
+  std::string pattern_u;  // upper-cased glob (e.g. "*.TST")
+};
+std::map<uint32_t, FindState> s_finds;
+
+void close_find_state(FindState &st) {
+  if (st.dir) ::closedir(st.dir);
+  st.dir = nullptr;
+}
 
 // --- Host <-> guest helpers -----------------------------------------------
 
@@ -195,6 +227,90 @@ struct Resolved {
   std::string host_path;
   bool        text_mode;
 };
+
+// Mangle a host filename into DOS 8.3 form.  Long basenames become
+// FIRST6~1, long extensions are truncated.  Case-sensitive collisions
+// aren't tracked -- a directory with "LongFoo1" and "LongFoo2" will show
+// both as "LONGFO~1" to DOS.  Acceptable for initial findfirst support;
+// collision-aware numbering comes later if real tools need it.
+std::string mangle_8_3(const std::string &name) {
+  std::string base, ext;
+  const size_t dot = name.find_last_of('.');
+  if (dot == std::string::npos) { base = name; ext = ""; }
+  else { base = name.substr(0, dot); ext = name.substr(dot + 1); }
+
+  auto up = [](std::string &s) {
+    for (auto &c : s) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+  };
+  up(base);
+  up(ext);
+
+  if (base.size() > 8) base = base.substr(0, 6) + "~1";
+  if (ext.size()  > 3) ext  = ext.substr(0, 3);
+  if (ext.empty())  return base;
+  return base + "." + ext;
+}
+
+// DOS file-time pair: DS:1E format ((h<<11)|(m<<5)|(s/2)), date ((y-1980)<<9|(mo<<5)|d).
+void dos_time_from_unix(time_t t, uint16_t &date, uint16_t &dostime) {
+  struct tm lt;
+  localtime_r(&t, &lt);
+  dostime = static_cast<uint16_t>((lt.tm_hour << 11) | (lt.tm_min << 5)
+                                  | (lt.tm_sec / 2));
+  date    = static_cast<uint16_t>(((lt.tm_year + 1900 - 1980) << 9)
+                                  | ((lt.tm_mon + 1) << 5) | lt.tm_mday);
+}
+
+// Write a matched entry to the current DTA.
+void dta_write_entry(const std::string &host_full, const std::string &mangled_name) {
+  struct stat st{};
+  ::stat(host_full.c_str(), &st);
+
+  uint16_t dostime = 0, dosdate = 0;
+  dos_time_from_unix(st.st_mtime, dosdate, dostime);
+
+  // Zero reserved area (0x00..0x14).
+  for (int i = 0; i < 0x15; ++i) mem_writeb(s_dta_linear + i, 0);
+  mem_writeb(s_dta_linear + 0x15, S_ISDIR(st.st_mode) ? 0x10 : 0x20);   // attr
+  mem_writeb(s_dta_linear + 0x16, dostime & 0xFF);
+  mem_writeb(s_dta_linear + 0x17, (dostime >> 8) & 0xFF);
+  mem_writeb(s_dta_linear + 0x18, dosdate & 0xFF);
+  mem_writeb(s_dta_linear + 0x19, (dosdate >> 8) & 0xFF);
+  const uint32_t size = static_cast<uint32_t>(st.st_size);
+  mem_writeb(s_dta_linear + 0x1A,  size        & 0xFF);
+  mem_writeb(s_dta_linear + 0x1B, (size >>  8) & 0xFF);
+  mem_writeb(s_dta_linear + 0x1C, (size >> 16) & 0xFF);
+  mem_writeb(s_dta_linear + 0x1D, (size >> 24) & 0xFF);
+  // Filename field is 13 bytes NUL-terminated.
+  size_t i = 0;
+  for (; i < mangled_name.size() && i < 12; ++i)
+    mem_writeb(s_dta_linear + 0x1E + i, static_cast<uint8_t>(mangled_name[i]));
+  for (; i < 13; ++i) mem_writeb(s_dta_linear + 0x1E + i, 0);
+}
+
+// Split a DOS path like "SUBDIR\*.C" into (dir, pattern) where dir can
+// still contain a drive letter (dos_to_host will handle that).
+std::pair<std::string, std::string> split_dir_pattern(const std::string &dos_path) {
+  const size_t slash = dos_path.find_last_of("\\/");
+  if (slash == std::string::npos) return {"", dos_path};
+  return {dos_path.substr(0, slash), dos_path.substr(slash + 1)};
+}
+
+// Scan the current FindState's DIR until a matching entry is found.
+// Fills the DTA and returns true on success.  On exhaustion, closes the
+// DIR and returns false.
+bool scan_next(FindState &st) {
+  while (struct dirent *ent = ::readdir(st.dir)) {
+    const std::string name = ent->d_name;
+    if (name == "." || name == "..") continue;
+    const std::string mangled = mangle_8_3(name);
+    if (!glob_match(mangled, st.pattern_u)) continue;
+    dta_write_entry(st.host_dir + "/" + name, mangled);
+    return true;
+  }
+  close_find_state(st);
+  return false;
+}
 
 Resolved resolve_path(const std::string &dos_path) {
   const std::string base_u = upper(basename_dos(dos_path));
@@ -391,6 +507,47 @@ Bitu dosemu_int21() {
       reg_ax = static_cast<uint16_t>(pos & 0xFFFF);
       reg_dx = static_cast<uint16_t>((pos >> 16) & 0xFFFF);
       it->second.read_pending = -1;  // invalidate text-mode read buffer
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
+    case 0x1A: {  // Set DTA to DS:DX
+      s_dta_linear = SegValue(ds) * 16u + reg_dx;
+      return CBRET_NONE;
+    }
+
+    case 0x4E: {  // Find first: CX=attr mask, DS:DX=ASCIIZ path/pattern
+      const std::string dos_path = read_dos_string(SegValue(ds), reg_dx);
+      auto [dir_part, pat_part]  = split_dir_pattern(dos_path);
+
+      // Evict any prior state on this DTA so we don't leak DIR*.
+      auto it = s_finds.find(s_dta_linear);
+      if (it != s_finds.end()) { close_find_state(it->second); s_finds.erase(it); }
+
+      const std::string host_dir = dir_part.empty()
+          ? dos_to_host("")
+          : dos_to_host(dir_part);
+      DIR *dir = ::opendir(host_dir.c_str());
+      if (!dir) { return_error(0x03); break; }      // path not found
+
+      FindState st;
+      st.dir       = dir;
+      st.host_dir  = host_dir;
+      st.pattern_u = upper(pat_part);
+      if (!scan_next(st)) { return_error(0x12); break; }  // no more files
+      s_finds[s_dta_linear] = st;
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
+    case 0x4F: {  // Find next: continues the DTA's saved state
+      auto it = s_finds.find(s_dta_linear);
+      if (it == s_finds.end()) { return_error(0x12); break; }
+      if (!scan_next(it->second)) {
+        s_finds.erase(it);
+        return_error(0x12);
+        break;
+      }
       set_cf(false);
       return CBRET_NONE;
     }
@@ -718,6 +875,9 @@ int run_program(const dosemu::Config &cfg) {
   s_drive_cwd.clear();
   s_mem_highwater = 0x2000;
   s_file_mappings = cfg.file_mappings;
+  s_dta_linear    = PSP_SEG * 16 + 0x80;
+  for (auto &kv : s_finds) close_find_state(kv.second);
+  s_finds.clear();
 
   // Populate drives from .cfg; fall back to C: = process CWD when empty.
   for (const auto &d : cfg.drives) s_drives[d.letter] = d.host_path;
@@ -755,8 +915,31 @@ int run_program(const dosemu::Config &cfg) {
 
   try {
     InitConfigDir();
+
+    // Replicate upstream sdl_main's pre-DOSBOX_Init setup so that the [sdl]
+    // section is registered.  Without this, dosbox's GFX code crashes in
+    // initialize_vsync_settings when the video timer fires.
+    messages_add_command_line();
+    DOS_Locale_AddMessages();
+    RENDER_AddMessages();
+    messages_add_sdl();
+    config_add_sdl();
+
     DOSBOX_Init();
     control->ParseConfigFiles(GetConfigDir());
+
+    // Headless-friendly overrides.  SDL's offscreen driver cannot grab the
+    // mouse, and nothing displays anyway; disable mouse capture and the
+    // DOS mouse driver, mute the mixer, and set sbtype=none so init
+    // doesn't trip on audio devices that don't exist in this sandbox.
+    if (cfg.headless) {
+      if (auto *s = control->GetSection("mouse")) {
+        s->HandleInputline("mouse_capture=nomouse");
+        s->HandleInputline("dos_mouse_driver=false");
+      }
+      if (auto *s = control->GetSection("mixer"))   s->HandleInputline("nosound=true");
+      if (auto *s = control->GetSection("sblaster")) s->HandleInputline("sbtype=none");
+    }
 
     if (SDL_Init(SDL_INIT_AUDIO | SDL_INIT_VIDEO | SDL_INIT_TIMER) < 0) {
       std::fprintf(stderr, "dosemu: SDL_Init failed: %s\n", SDL_GetError());

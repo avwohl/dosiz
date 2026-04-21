@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 static void print_usage(const char *prog) {
@@ -86,5 +87,12 @@ int main(int argc, char **argv) {
 
   int rc = dosemu::bridge::run_program(cfg);
   if (rc < 0) return 1;
-  return rc;
+  // dosbox's module singletons have no guaranteed destruction order -- the
+  // PIC destructor touches already-freed IO maps on exit, and the heap
+  // reports "corrupted size vs. prev_size" during teardown.  _exit skips
+  // C++ static destruction entirely; the OS reclaims process resources
+  // just fine, and stdout/stderr have already been flushed.
+  std::fflush(stdout);
+  std::fflush(stderr);
+  _exit(rc);
 }

@@ -21,9 +21,10 @@ handled entirely by C++ host code. Currently implemented:
 	09  print string       30  get DOS version    40  write handle
 	0E  set drive          35  get int vector     42  seek handle
 	19  get drive          3B  chdir              44  ioctl (basic)
-	3C  create handle      3D  open handle        47  get cwd
-	3E  close handle       48  allocate (bump)    49  free (no-op)
-	4A  resize (stub)      4C  exit
+	1A  set DTA            3C  create handle      47  get cwd
+	3D  open handle        3E  close handle       48  allocate (bump)
+	49  free (no-op)       4A  resize (stub)      4C  exit
+	4E  findfirst          4F  findnext
 
 PSP command tail at offset 80h is populated from argv. Drive mounts and
 per-file / per-pattern mappings come from a `.cfg` file:
