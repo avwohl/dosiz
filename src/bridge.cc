@@ -960,6 +960,13 @@ Bitu dosemu_int16() {
 Bitu dosemu_rm_stop() { return CBRET_STOP; }
 RealPt s_rm_stop_ptr = 0;
 
+// Virtual interrupt state for AX=0900/0901/0902.  Mirrors IF visibility
+// from the client's perspective -- real CPU IF is under its own control
+// via STI/CLI.  We don't forward IF changes to dosbox's real IRQ
+// masking (no real IRQs wire in from the host), so this is a pure
+// shadow state the client can round-trip through 0900/0901/0902.
+bool s_virtual_if = true;    // clients assume interrupts enabled at start
+
 // INT 31h (DPMI) — stage 4 subset.
 //
 //   AX=0400  Get DPMI version.
@@ -1179,6 +1186,55 @@ Bitu dosemu_int31() {
       s_seg2desc_cache[data_seg] = 0;
       ldt_set(idx, false);
       write_ldt_descriptor(idx, 0, 0, 0);
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
+    case 0x0210: {  // Get Protected Mode Interrupt Vector
+      // Input:  BL = vector
+      // Output: CX:(E)DX = selector:offset of the current PM IDT gate
+      const PhysPt gate = IDT_SEG * 16u + reg_bl * 8u;
+      const uint32_t off = mem_readb(gate + 0)
+                         | (mem_readb(gate + 1) << 8)
+                         | (mem_readb(gate + 6) << 16)
+                         | (mem_readb(gate + 7) << 24);
+      const uint16_t sel = mem_readb(gate + 2)
+                         | (mem_readb(gate + 3) << 8);
+      reg_cx  = sel;
+      reg_edx = off;
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
+    case 0x0212: {  // Set Protected Mode Interrupt Vector
+      // Input: BL = vector, CX = selector, (E)DX = offset
+      // Writes a gate matching the current client's bitness -- if the
+      // CS descriptor has D=1 we install a 32-bit interrupt gate
+      // (type 0x8E), otherwise 16-bit (type 0x86).  The client is
+      // responsible for the pointed-to code ending in the right IRET
+      // variant.
+      const bool bits32 = cpu.code.big;
+      write_idt_gate(reg_bl, reg_cx, reg_edx, bits32);
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
+    case 0x0900: {  // Get and Disable Virtual Interrupt State
+      reg_al = s_virtual_if ? 1 : 0;     // AL = previous state
+      s_virtual_if = false;
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
+    case 0x0901: {  // Get and Enable Virtual Interrupt State
+      reg_al = s_virtual_if ? 1 : 0;     // AL = previous state
+      s_virtual_if = true;
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
+    case 0x0902: {  // Get Virtual Interrupt State
+      reg_al = s_virtual_if ? 1 : 0;
       set_cf(false);
       return CBRET_NONE;
     }

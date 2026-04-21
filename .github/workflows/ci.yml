@@ -163,6 +163,16 @@ jobs:
           echo "dosemu output: $out"
           echo "$out" | grep -q 'dpmi-integration=ok'
 
+      - name: DPMI AX=0210/0212 + 0900/0901/0902 PM IDT + virtual IF
+        run: |
+          # AX=0210 reads / AX=0212 writes a PM IDT gate.  Client
+          # installs its own PM INT handlers via 0212.  Virtual IF
+          # state is tracked as a shadow boolean: 0900 get+disable,
+          # 0901 get+enable, 0902 read.
+          out=$(build/dosemu tests/DPMI_PMIDT.COM 2>/dev/null)
+          echo "dosemu output: $out"
+          echo "$out" | grep -q 'dpmi-pmidt=ok'
+
       - name: DPMI AX=0100/0101: DOS memory alloc/free (hybrid RM+PM)
         run: |
           # AX=0100 allocates via the MCB chain and pairs the result
