@@ -1117,6 +1117,72 @@ Bitu dosemu_int31() {
       return CBRET_NONE;
     }
 
+    case 0x0100: {  // Allocate DOS Memory Block
+      // Input:  BX = paragraphs to allocate
+      // Output: AX = real-mode segment, DX = PM selector aliasing it
+      // Error:  CF=1, AX=8011/8013, BX = largest free paragraphs
+      //
+      // This is the DPMI hybrid-allocator: the returned memory must be
+      // addressable both in RM (via the segment) and PM (via the
+      // selector).  We delegate to the DOS MCB chain for the bytes and
+      // to the LDT allocator for a selector, then wire the selector's
+      // descriptor to cover the MCB region.
+      if (reg_bx == 0) {
+        reg_ax = 0x8021; set_cf(true); return CBRET_NONE;
+      }
+      uint16_t largest = 0;
+      const uint16_t data_seg = mcb_allocate(reg_bx, largest);
+      if (data_seg == 0) {
+        reg_ax = 0x8013;
+        reg_bx = largest;        // spec: return largest available on OOM
+        set_cf(true);
+        return CBRET_NONE;
+      }
+      const uint16_t ldt_idx = ldt_find_run(1);
+      if (ldt_idx == 0) {
+        mcb_free(data_seg);      // roll back the MCB alloc
+        reg_ax = 0x8011;
+        set_cf(true);
+        return CBRET_NONE;
+      }
+      ldt_set(ldt_idx, true);
+      // Limit covers the allocated region exactly: bx paragraphs * 16 - 1.
+      const uint32_t limit_bytes = (static_cast<uint32_t>(reg_bx) << 4) - 1u;
+      write_ldt_descriptor(ldt_idx, data_seg * 16u, limit_bytes, 0x92);
+      // Record the alias so AX=0002 on the same RM seg returns the
+      // same selector (DPMI identity semantics).
+      s_seg2desc_cache[data_seg] = ldt_idx;
+      reg_ax = data_seg;
+      reg_dx = (ldt_idx << 3) | 0x04;   // TI=1 (LDT), RPL=0
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
+    case 0x0101: {  // Free DOS Memory Block
+      // Input:  DX = selector returned by AX=0100.
+      if (!(reg_dx & 0x4) || !selector_is_valid(reg_dx)) {
+        reg_ax = 0x8022; set_cf(true); return CBRET_NONE;
+      }
+      const uint16_t idx = reg_dx >> 3;
+      if (!ldt_bit(idx)) {
+        reg_ax = 0x8022; set_cf(true); return CBRET_NONE;
+      }
+      // Recover the RM segment this selector was aliasing from the
+      // descriptor's base, then free both the MCB and the LDT slot.
+      const PhysPt p = LDT_SEG * 16u + idx * 8u;
+      const uint32_t base = mem_readb(p + 2)
+                          | (mem_readb(p + 3) << 8)
+                          | (mem_readb(p + 4) << 16)
+                          | (mem_readb(p + 7) << 24);
+      const uint16_t data_seg = static_cast<uint16_t>(base >> 4);
+      mcb_free(data_seg);
+      s_seg2desc_cache[data_seg] = 0;
+      ldt_set(idx, false);
+      write_ldt_descriptor(idx, 0, 0, 0);
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
     case 0x0204: {  // Get real-mode interrupt vector
       // Input:  BL = vector number
       // Output: CX:DX = real-mode seg:off from the IVT (physical 0..3FF)

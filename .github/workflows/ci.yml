@@ -163,6 +163,18 @@ jobs:
           echo "dosemu output: $out"
           echo "$out" | grep -q 'dpmi-integration=ok'
 
+      - name: DPMI AX=0100/0101: DOS memory alloc/free (hybrid RM+PM)
+        run: |
+          # AX=0100 allocates via the MCB chain and pairs the result
+          # with a fresh LDT selector whose descriptor aliases the MCB
+          # region.  Client can use the returned RM seg in real-mode
+          # DOS calls OR the PM selector in-mode; both point at the
+          # same bytes.  AX=0002 (segment-to-descriptor) must return
+          # the cached selector for identity semantics.
+          out=$(build/dosemu tests/DPMI_DOSMEM.COM 2>/dev/null)
+          echo "dosemu output: $out"
+          echo "$out" | grep -q 'dpmi-dosmem=ok'
+
       - name: DPMI AX=0302: Call Real Mode Procedure With IRET Frame
         run: |
           # Same mode-switch as 0300/0301 but pushes an IRET frame
