@@ -1,4 +1,4 @@
-# dosemu WIP — end of session 2026-04-21
+# dosemu WIP — end of session 2026-04-21 (continued)
 
 All work is committed and pushed to `github.com/avwohl/dosemu` (main).
 No uncommitted changes to rescue. The `dosbox-staging` submodule always
@@ -6,8 +6,8 @@ shows "modified content" because the Makefile patches its
 `src/gui/sdlmain.cpp` at build time from
 `patches/sdlmain-expose-setup.patch`; `make distclean` resets it.
 
-HEAD is at `b487526` "LE loader: page-copy into MCB-allocated host
-segments".
+HEAD is at `db1f0c6` "LE loader: tier object allocation into pm_arena
+for >1MB binaries".
 
 ## Resume checklist (fresh machine)
 
@@ -122,30 +122,42 @@ Plus:
 - **AH=4D**: reads `s_last_child_exit` populated by AH=4B on restore.
 - 3-level chain verified: `GRAND.COM` → `MIDDLE.COM` → `CHILD.COM`.
 
-## LE loader — partial
+## LE loader — more landed
 
-Commits `dbbe111` + `b487526` land detection + page copy:
+Commits `dbbe111` + `b487526` + `98ce926` + `db1f0c6`:
 
 - MZ binaries get their `lfanew` (file offset 0x3C) checked for "LE"
   or "LX" signature.
 - `load_le_inspect` dumps header + object table to stderr.
-- `le_load_objects` walks the object table, `mcb_allocate`s per
-  object, copies "legal" pages (type 0) from `data_pages` into the
-  host seg. Last-page trim honored. Zero-filled / invalid / iterated
-  types: handled by leaving zeros (iterated pages are TODO, uncommon).
+- `le_load_objects` walks the object table, allocates per object
+  (MCB first, pm_arena >= 1MB fallback), copies "legal" pages
+  (type 0) from `data_pages` into host memory. Last-page trim
+  honored.
+- `le_apply_fixups` walks `fixup_page_table` @ le_off+0x68 +
+  `fixup_record_table` @ le_off+0x6C. Source types 0x05/0x07/0x08
+  land fully as internal-reference patches against the post-load
+  host linear address; types 0x02/0x03/0x06 are stubbed (no LDT
+  descriptors installed for LE objects yet). Imports/entry-table
+  targets log + abort.
+- Hand-crafted `tests/LE_MIN.EXE` (387 bytes; regeneratable via
+  `tests/gen_le_min.py`) exercises exactly one type-7 fixup. CI
+  verifies the walker resolves the target to host_base[obj2] + 0.
+- Verified end-to-end on Open Watcom's real `wd.exe` (710KB,
+  3 objects, 13655 fixups): all objects allocated, all fixups
+  resolved, no crashes. Objects 1+3 land in pm_arena above 1MB;
+  obj 2 lands in the MCB arena.
 
-### Still missing for LE execution (honest scope)
+### Still missing for LE execution
 
 | Piece | Sketch |
 |---|---|
-| PM-memory allocator > 640KB | Current MCB arena is 0x2000..0xA000 (512KB). Real LE clients (`wd.exe`, `wcl386.exe` ~600KB+) don't fit. Need a separate 32-bit linear allocator above 1MB using dosbox's full 16MB RAM. |
-| Fixup walker | Parse `fixup_page_table` @ `le_off+0x68` + `fixup_record_table` @ `le_off+0x6C`. Source type 7 (32-bit offset) is the minimum; types 2 (16-bit selector), 3 (16:16 pointer), 5 (16-bit offset), 8 (32-bit self-relative) ideally too. Without fixups, object internal references point at zero/garbage. |
 | PM descriptor install per object | One LDT entry per object. Access byte from object flags: code(0x0004)→0x9A code-read, else 0x92 data-rw. D-bit from BIG flag (0x4000). |
-| Entry point dispatch | Install descriptors, enter PM, set CS:EIP from `entry_obj`:`entry_eip` (LE header offset 0x18:0x1C), SS:ESP from `stack_obj`:`stack_esp` (0x20:0x24), DS from the automatic-data-object selector (LE header offset 0x94). |
-| Test target | No small LE binary on hand. Either cross-build a tiny one (Watcom snap can do it) or hand-craft raw bytes. |
+| Entry point dispatch | Install descriptors, enter PM, set CS:EIP from `entry_obj`:`entry_eip` (LE header offset 0x18:0x1C), SS:ESP from `stack_obj`:`stack_esp` (0x20:0x24), DS from the automatic-data-object selector (LE header offset 0x94). Existing `dpmi_enter_pm_mode` has the GDT/IDT/CR0/LLDT plumbing; the LE path needs its own variant that swaps in per-object LDT descriptors first and jumps to a client-chosen CS:EIP instead of using the retf-to-caller trick. |
+| Selector-bearing fixups (0x02/0x03/0x06) | Once descriptors are installed, replace the zero-selector stub with the LDT selector of the target object. |
+| Test target | `LE_MIN.EXE` has working fixups but its "code" is `B8 imm32; INT 20h` -- INT 20h is RM terminate, not PM. Change to `B4 4C CD 21` (AH=4Ch INT 21h) and rely on the PM INT 21h handler once entry dispatch is up. |
 
-Roughly a further ~600-800 lines + test target to reach "hello-world
-LE binary runs end-to-end" (the original plan's "stage 7").
+Roughly another ~200-400 lines to reach "hello-world LE binary runs
+end-to-end" from here.
 
 ## Available Open Watcom tools
 
@@ -195,23 +207,44 @@ cleanly (no more "illegal descriptor type" abort). Without a
 client binary to load it sits in its own wait loop. The remaining
 gap for `DOS32A foo.exe` end-to-end is the LE loader above.
 
+## pm_arena memory tier (new this session)
+
+`pm_alloc` / `pm_free` / `pm_resize` claim the extended-memory region
+[1MB, memsize) via a simple first-fit free list over linear bytes.
+AX=0501 tries the MCB tier first (paras <= 0xFFFFh); on MCB-OOM or
+size > 1MB it falls through to `pm_alloc`. Handle encoding
+distinguishes the two tiers: SI=0 + DI=mcb_seg for MCB blocks, or
+SI:DI = high:low(host linear base) for pm_arena blocks. AX=0502 and
+AX=0503 dispatch on SI. Fixture `DPMI_PMALLOC.COM` asks for just
+over 1MB and verifies the tier switch + handle encoding + ES-selector
+round-trip + in-place shrink + free.
+
+`pm_alloc` intentionally does not zero-fill: touching every byte via
+`mem_writeb` in a multi-MB loop was observed to trip dosbox's IRET
+bookkeeping on return from the 0501 gate (E_Exit: "IRET:Outer level:
+Stack segment not writable"). Clients that want zeros clear the
+block themselves. DPMI doesn't require it.
+
 ## Next-session pick list
 
 Ordered roughly by leverage / difficulty:
 
-1. **Hand-build a tiny LE test target + fixup walker.** Write a
-   NASM-plus-byte-stuffing tool that emits a minimal LE binary
-   (1 code object of a few bytes, no imports, type-7 fixup
-   test). Use it to unblock development of `le_apply_fixups`.
-2. **PM-memory allocator > 1MB.** Add a `pm_alloc` API returning
-   32-bit linear addresses in dosbox's 16MB. Adapt AX=0501 to use
-   it for large requests, falling back to MCB for <640KB.
-3. **PM descriptor install + entry dispatch for LE.** With
-   fixups working, finish the loader: install GDT entries per
-   object, enter PM, jump.
-4. **Cross-build a DJGPP tiny hello** (separate toolchain). Might
-   avoid LE entirely if we can use the COFF-in-MZ wrapper.
-5. **AH=4B AL=4/5** (Load overlay variants; minor).
+1. **PM descriptor install + entry dispatch for LE.** With
+   fixups + pm_arena backing working, this is now the last big
+   piece. Plan: add `le_enter_pm` that installs an LDT descriptor
+   per object (access byte from flags, D-bit from BIG, base =
+   host_base, limit = virt_size - 1), loads GDT/LDT/IDT the same
+   way `dpmi_enter_pm_mode` does today, flips CR0.PE=1, and jumps
+   to `entry_obj`:`entry_eip` with SS:ESP and auto-data-obj DS set
+   up. Then re-test on `LE_MIN.EXE` (after swapping its exit stub
+   to AH=4Ch INT 21h) and see how far `wd.exe` gets.
+2. **Selector-bearing fixups (0x02/0x03/0x06).** Once LDT
+   descriptors exist per object, replace the stub patches in
+   `le_apply_fixups` with real selectors.
+3. **Cross-build a DJGPP tiny hello** (separate toolchain). Might
+   give us a COFF-in-MZ path that's easier than LE for some
+   targets.
+4. **AH=4B AL=5** (Set execution state).
 
 ## Full fixture inventory
 
@@ -228,6 +261,12 @@ Real-mode / non-DPMI:
 	ENVDUMP.COM     PSP:[2Ch] env walker
 	MCB_TEST.COM    alloc-free-alloc-same MCB coalescing
 	SURVIVE.COM     unimplemented AH soft-fail continues
+
+LE fixtures:
+
+	LE_MIN.EXE            hand-crafted 387-byte LE (gen_le_min.py);
+	                      1 code obj + 1 data obj + one type-7 fixup
+	                      CI verifies the walker resolves to host_base
 
 DPMI:
 
@@ -255,6 +294,7 @@ DPMI:
 	DPMI_RMCB.COM         AX=0303/0304 RM callback (16-bit PM proc)
 	DPMI_RMCB32.COM       AX=0303/0304 RM callback (32-bit PM proc)
 	DPMI_EXC.COM          AX=0203 PM exception actually dispatches (#UD)
+	DPMI_PMALLOC.COM      AX=0501 tier-2 pm_arena fallback (>1MB alloc)
 
 Process management:
 
@@ -275,6 +315,10 @@ External-tool integration:
 ## Commits since the original handoff (1222c44)
 
 ```
+db1f0c6  LE loader: tier object allocation into pm_arena for >1MB binaries
+2c63896  DPMI AX=0501: pm_arena tier above 1MB
+98ce926  LE loader: apply internal-reference fixups from fixup_page_table
+872271d  Convert WIP.txt -> WIP.md and refresh for end-of-session 2026-04-21
 b487526  LE loader: page-copy into MCB-allocated host segments
 dbbe111  Loader: recognize LE/LX format, report structure on load attempt
 671c168  AH=4Bh: AL=1 (load without execute) + AL=3 (load overlay)
@@ -304,5 +348,5 @@ ffcdbff  DPMI stage 4 (subset): INT 31h AX=0400 + get/set segment base
 bfe1c76  DPMI stage 5 (32-bit): end-to-end fixture + IRETD callback stub
 ```
 
-27 commits from the session's start (`1222c44` "WIP.txt: handoff notes").
+30 commits from the session's start (`1222c44` "WIP.txt: handoff notes").
 All on main, all pushed.
