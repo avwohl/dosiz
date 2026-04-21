@@ -84,10 +84,10 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  if (!dosemu::bridge::register_sections()) return 1;
+  if (!dosemu::bridge::register_sections_and_run_startup()) return 1;
 
   std::fprintf(stderr,
-    "dosemu: dosbox sections registered; module activation / INT 21h handler\n"
+    "dosemu: startup seam verified; module activation / INT 21h handler\n"
     "        / EXE loader not yet wired up.\n"
     "        program=%s  args=%zu  headless=%d  machine=%s  cputype=%s  memsize=%d\n",
     cfg.program.c_str(), cfg.args.size(), cfg.headless ? 1 : 0,
