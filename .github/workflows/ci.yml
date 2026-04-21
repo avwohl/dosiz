@@ -199,6 +199,12 @@ jobs:
           echo "dosemu output: $out"
           echo "$out" | grep -q 'COMSPEC='
 
+      - name: Smoke (unknown INT 21h AH soft-fails, program continues)
+        run: |
+          out=$(build/dosemu tests/SURVIVE.COM 2>/dev/null)
+          echo "dosemu output: $out"
+          echo "$out" | grep -q 'survived-unimpl'
+
       - name: Smoke (run WRITE.COM, verify file I/O + command tail)
         run: |
           workdir=$(mktemp -d)

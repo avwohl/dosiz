@@ -906,12 +906,20 @@ Bitu dosemu_int21() {
     }
 
     default:
-      std::fprintf(stderr, "dosemu: unimplemented INT 21h AH=%02Xh "
-                           "(AL=%02Xh BX=%04Xh CX=%04Xh DX=%04Xh)\n",
-                   reg_ah, reg_al, reg_bx, reg_cx, reg_dx);
-      s_exit_code = 1;
-      shutdown_requested = true;
-      return CBRET_STOP;
+      // Unknown sub-function.  Log once per distinct AH to stderr for
+      // debugging, then return the DOS "invalid function" error so the
+      // program continues -- killing on unimplemented AH values prevents
+      // real tools from ever reaching the parts we *do* handle.
+      static std::set<uint8_t> warned;
+      if (warned.insert(reg_ah).second) {
+        std::fprintf(stderr,
+                     "dosemu: unimplemented INT 21h AH=%02Xh "
+                     "(AL=%02Xh BX=%04Xh CX=%04Xh DX=%04Xh) -- returning "
+                     "invalid-function, program continues\n",
+                     reg_ah, reg_al, reg_bx, reg_cx, reg_dx);
+      }
+      return_error(0x01);  // invalid function
+      break;
   }
   return CBRET_NONE;
 }
