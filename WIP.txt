@@ -190,21 +190,19 @@ DOS32A probe (2026-04-21 late afternoon)
 ----------------------------------------
 
 ~/ow/binw/dos32a.exe loads as MZ, completes its real-mode init, does
-the DPMI switch, then faults inside PM at an un-installed IDT slot:
-"INT:Gate Selector points to illegal descriptor with type 0x0".  The
-last INT 21h calls we see before the fault:
+the DPMI switch (with AX=1 -- enters 32-bit PM directly), then faults
+inside PM at an un-installed IDT slot:
+"INT:Gate Selector points to illegal descriptor with type 0x0".
 
-    AH=FF AL=87 BX=0000 DX=0116     (DOS/32A custom probe; soft-fail ok)
-    AH=4A AL=81 BX=0981             (resize memory block)
-    AH=30 AL=04                     (get DOS version)
-    AH=4A AL=FD BX=06FD             (resize memory block)
-    AH=FF AL=88 BX=090C DX=0CB4     (DOS/32A custom probe)
+After shipping 16-bit PM reflection (every CB_SEG-pointing IVT entry
+now has a matching PM IDT gate), DOS32A still faults at the same spot
+-- because it enters 32-bit PM and our reflection is 16-bit-only.
+The RM callback stubs end in `CF` which is 16-bit IRET; a 32-bit gate
+pushes a 12-byte frame that can't be unwound by a 16-bit IRET.
 
-After that it enters PM and fires an interrupt we don't route.  The
-fix is broader PM-IDT reflection: every vector that isn't INT 21h/31h
-should reflect back to a real-mode handler that invokes the IVT.  That
-will almost certainly unblock DOS32A and most DPMI clients that issue
-BIOS INTs from PM.
+Next step: 32-bit PM reflection via per-vector CB_IRETD shims
+(stub = `FE 38 xx xx 66 CF`), one per vector, installed in the 32-bit
+PM IDT.  That should unblock DOS32A.
 
 
 Fixture inventory (CI covers all these)
@@ -234,6 +232,9 @@ Fixture inventory (CI covers all these)
                                  load-into-ES verification.
     DPMI_STAGE4C.COM         -- AX=0204/0205 IVT round-trip, AX=0500
                                  free memory info buffer.
+    DPMI_REFLECT.COM         -- INT 10h AH=0F from 16-bit PM round-trips
+                                 through the installed IVT-reflection
+                                 IDT gate to the real-mode BIOS handler.
     HELLO_W.EXE              -- Open Watcom 16-bit hello (cross-compiled)
     HELLO_B.COM              -- bcc 0.16.21 hello (cross-compiled)
     EXE2BIN.EXE              -- real Open Watcom DOS-hosted utility

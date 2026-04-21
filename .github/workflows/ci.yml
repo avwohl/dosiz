@@ -136,6 +136,19 @@ jobs:
           echo "dosemu output: $out"
           echo "$out" | grep -q 'dpmi-stage4c=ok'
 
+      - name: DPMI reflection: INT 10h AH=0F from 16-bit PM reaches BIOS
+        run: |
+          # Un-installed PM IDT vectors used to fault with "INT:Gate
+          # Selector points to illegal descriptor with type 0x0".  Our
+          # DPMI entry now walks the real-mode IVT and installs 16-bit
+          # PM IDT gates for every vector whose seg == CB_SEG (0xF000),
+          # routing the PM INT to the same native callback the real-mode
+          # vector points at.  This fixture asks video mode (INT 10h
+          # AH=0F) from both RM and PM and verifies the results match.
+          out=$(build/dosemu tests/DPMI_REFLECT.COM 2>/dev/null)
+          echo "dosemu output: $out"
+          echo "$out" | grep -q 'dpmi-reflect=ok'
+
       - name: DPMI stage 6: alloc, write/read round-trip, free
         run: |
           # INT 31h AX=0501 allocates 256 bytes from the MCB arena and

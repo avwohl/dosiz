@@ -729,6 +729,10 @@ Bitu dosemu_dpmi_entry() {
   // switch is identical except for the D flag on the code descriptor and
   // the IDT gate type.
   const bool bits32 = (reg_ax == 1);
+  if (std::getenv("DOSEMU_TRACE")) {
+    std::fprintf(stderr, "[dpmi] switch entry: bits32=%d client_cs=%04x\n",
+                 bits32 ? 1 : 0, client_cs);
+  }
 
   write_gdt_descriptor(0, 0,              0,      0);                 // null
   write_gdt_descriptor(1, client_cs * 16, 0xFFFF, 0x9A, bits32);      // code
@@ -767,6 +771,31 @@ Bitu dosemu_dpmi_entry() {
   const uint16_t int21_cb_off = bits32 ? s_int21_cb32_off : s_int21_cb_off;
   const uint16_t int31_cb_off = bits32 ? s_int31_cb32_off : s_int31_cb_off;
   for (int i = 0; i < 256; ++i) write_idt_gate(i, 0, 0, bits32);
+
+  // PM→RM reflection for un-installed vectors: walk the real-mode IVT
+  // and, for every entry whose segment is dosbox's callback area
+  // (CB_SEG=0xF000), install a 16-bit PM IDT gate pointing at that
+  // offset.  Our PM_CB_SEL (0x28) covers 0xF0000.  The RM stub ends in
+  // `CF` (16-bit IRET) which correctly unwinds a 16-bit gate's 6-byte
+  // frame, so this works for 16-bit PM clients today.
+  //
+  // Skipped for 32-bit PM: the RM stub's 16-bit IRET can't unwind the
+  // 12-byte frame a 32-bit gate pushes (same hazard the stage 5' 32-bit
+  // work ran into for INT 21h).  32-bit reflection needs per-vector
+  // CB_IRETD shims and is a follow-up.
+  //
+  // INT 21h/31h are handled by dedicated gates below, so we don't
+  // overwrite them during the walk.  (CB_SEG is a dosbox macro = 0xF000.)
+  if (!bits32) {
+    for (int v = 0; v < 256; ++v) {
+      if (v == 0x21 || v == 0x31) continue;
+      const uint32_t ivt = mem_readd(static_cast<uint32_t>(v) * 4u);
+      const uint16_t seg = (ivt >> 16) & 0xFFFF;
+      const uint16_t off = ivt & 0xFFFF;
+      if (seg == CB_SEG) write_idt_gate(v, PM_CB_SEL, off, false);
+    }
+  }
+
   if (int21_cb_off)
     write_idt_gate(0x21, PM_CB_SEL, int21_cb_off, bits32);
   if (int31_cb_off)
@@ -2048,6 +2077,10 @@ void dosemu_startup() {
     const RealPt rp = int21_cb.Get_RealPointer();
     s_int21_cb_seg = static_cast<uint16_t>((rp >> 16) & 0xFFFF);
     s_int21_cb_off = static_cast<uint16_t>(rp & 0xFFFF);
+    if (std::getenv("DOSEMU_TRACE")) {
+      std::fprintf(stderr, "[cb] int21 callback at %04x:%04x\n",
+                   s_int21_cb_seg, s_int21_cb_off);
+    }
   }
 
   // Second callback: same native handler, but the dosbox-emitted stub
