@@ -811,7 +811,8 @@ uint16_t s_int21_cb32_off  = 0;
 // stage-1 `Set_RealVec(0x31)` covers only the real-mode IVT.
 uint16_t s_int31_cb_off    = 0;
 uint16_t s_int31_cb32_off  = 0;
-uint16_t s_le_exc_cb32_off = 0;
+uint16_t s_le_exc_cb16_off = 0;    // CB_IRET  shared handler
+uint16_t s_le_exc_cb32_off = 0;    // CB_IRETD shared handler
 
 void write_gdt_descriptor(int idx, uint32_t base, uint32_t limit,
                           uint8_t access, bool bits32 = false) {
@@ -1053,39 +1054,138 @@ Bitu dosemu_int16() {
 // DOSBOX_RunMachine, handing control back to the AX=0302 handler.
 Bitu dosemu_rm_stop() { return CBRET_STOP; }
 
-// LE exception handler.  Installed as the PM IDT gate target for
-// vectors 0x00..0x1F when launching an LE binary.  We can't recover
-// from a client-side PM fault (no virtual-memory fault-in, no
-// client-provided handler like DPMI AX=0203), so we log the stacked
+// LE exception handler -- per-vector dispatch.  Installed as PM IDT
+// gate targets for vectors 0x00..0x1F on the LE launch path.  We
+// can't recover from a client PM fault (no virtual-memory fault-in,
+// no client-provided handler like DPMI AX=0203), so we log the
 // fault frame and terminate cleanly instead of letting dosbox abort
 // at the "Gate Selector points to illegal descriptor" cascade.
 //
-// Same callback is wired to all 32 vectors, so we don't know which
-// one we're handling.  The frame layout differs: #GP/#TS/#NP/#SS/
-// #PF/#AC push a 4-byte error code BEFORE EIP.  We dump the top 5
-// dwords so whichever interpretation is right, the user sees
-// enough.  CS and EFLAGS are recognizable (CS is a valid LDT
-// selector; EFLAGS has reserved bit 1 = 1) which lets a reader
-// disambiguate.
-Bitu dosemu_le_exception() {
+// The frame layout differs by vector:
+//   Error-code vectors (#DF, #TS, #NP, #SS, #GP, #PF, #AC) push a
+//   4-byte error code before [EIP, CS, EFLAGS].
+//   The rest push only [EIP, CS, EFLAGS].
+bool le_exc_has_error_code(int vec) {
+  // Intel SDM vol 3 table 6-1.  #AC (17) also pushes an error code
+  // but is rarely used in pre-emptive contexts; included for
+  // completeness.
+  switch (vec) {
+    case 8: case 10: case 11: case 12: case 13: case 14: case 17:
+      return true;
+    default:
+      return false;
+  }
+}
+
+const char *le_exc_name(int vec) {
+  switch (vec) {
+    case 0:  return "#DE  divide-by-zero";
+    case 1:  return "#DB  debug";
+    case 2:  return "NMI";
+    case 3:  return "#BP  breakpoint";
+    case 4:  return "#OF  overflow";
+    case 5:  return "#BR  bound-range";
+    case 6:  return "#UD  invalid opcode";
+    case 7:  return "#NM  device-not-available";
+    case 8:  return "#DF  double-fault";
+    case 10: return "#TS  invalid TSS";
+    case 11: return "#NP  segment-not-present";
+    case 12: return "#SS  stack-segment fault";
+    case 13: return "#GP  general-protection";
+    case 14: return "#PF  page-fault";
+    case 16: return "#MF  x87 FPU";
+    case 17: return "#AC  alignment-check";
+    case 18: return "#MC  machine-check";
+    case 19: return "#XM  SIMD FPU";
+    default: return "reserved/unknown";
+  }
+}
+
+// Parse and log a 32-bit-gate exception frame (used when the LE
+// client entered PM with a 32-bit CS).  Frame layout: [err] EIP CS
+// EFLAGS, all dwords.  CS's low word is the faulting selector.
+void dosemu_le_exc_dump32(int vec) {
   const PhysPt sp = SegPhys(ss) + reg_esp;
-  const uint32_t w0 = mem_readd(sp + 0);
-  const uint32_t w1 = mem_readd(sp + 4);
-  const uint32_t w2 = mem_readd(sp + 8);
-  const uint32_t w3 = mem_readd(sp + 12);
-  const uint32_t w4 = mem_readd(sp + 16);
+  const bool has_err = le_exc_has_error_code(vec);
+  const uint32_t err = has_err ? mem_readd(sp) : 0;
+  const uint32_t off = has_err ? 4 : 0;
+  const uint32_t fault_eip = mem_readd(sp + off);
+  const uint16_t fault_cs  = mem_readw(sp + off + 4);
+  const uint32_t fault_efl = mem_readd(sp + off + 8);
   std::fprintf(stderr,
-      "dosemu: LE client took a PM exception -- terminating.\n"
-      "  SS:ESP = %04x:%08x\n"
-      "  stack[0..4] = %08x %08x %08x %08x %08x\n"
-      "  (no-error-code frame is [EIP CS EFLAGS]; error-code frame\n"
-      "   is [ERR EIP CS EFLAGS] -- CS is the first word matching a\n"
-      "   valid LDT selector, EFLAGS has bit 1 = 1.)\n",
-      SegValue(ss), reg_esp, w0, w1, w2, w3, w4);
-  s_exit_code   = 1;
+      "dosemu: LE client exception 0x%02x (%s) -- terminating.\n"
+      "  fault at CS:EIP = %04x:%08x  EFLAGS = %08x\n",
+      vec, le_exc_name(vec), fault_cs, fault_eip, fault_efl);
+  if (has_err)
+    std::fprintf(stderr, "  error code = 0x%08x\n", err);
+}
+
+// Parse and log a 16-bit-gate exception frame.  Frame layout:
+// [err] IP CS FLAGS, all words.
+void dosemu_le_exc_dump16(int vec) {
+  const PhysPt sp = SegPhys(ss) + reg_esp;
+  const bool has_err = le_exc_has_error_code(vec);
+  const uint16_t err = has_err ? mem_readw(sp) : 0;
+  const uint32_t off = has_err ? 2 : 0;
+  const uint16_t fault_ip  = mem_readw(sp + off);
+  const uint16_t fault_cs  = mem_readw(sp + off + 2);
+  const uint16_t fault_efl = mem_readw(sp + off + 4);
+  std::fprintf(stderr,
+      "dosemu: LE client exception 0x%02x (%s) -- terminating.\n"
+      "  fault at CS:IP = %04x:%04x  FLAGS = %04x\n",
+      vec, le_exc_name(vec), fault_cs, fault_ip, fault_efl);
+  if (has_err)
+    std::fprintf(stderr, "  error code = 0x%04x\n", err);
+}
+
+// vec < 0 means "unknown -- shared callback, don't have per-vector
+// info".  Prints "unknown" in the log but still dumps the frame,
+// which identifies the fault CS:EIP (and error code if this turns
+// out to be an error-code vector -- we print both interpretations).
+Bitu dosemu_le_exc_handle32(int vec) {
+  if (vec < 0) {
+    // Without vector info, dump the top 5 dwords so either
+    // interpretation (with or without error code) is readable.
+    const PhysPt sp = SegPhys(ss) + reg_esp;
+    std::fprintf(stderr,
+        "dosemu: LE client PM exception (vector unknown) -- terminating.\n"
+        "  SS:ESP = %04x:%08x  stack = %08x %08x %08x %08x %08x\n"
+        "  (no-error-code frame = EIP CS EFLAGS; error-code frame = ERR EIP CS EFLAGS)\n",
+        SegValue(ss), reg_esp,
+        mem_readd(sp), mem_readd(sp + 4), mem_readd(sp + 8),
+        mem_readd(sp + 12), mem_readd(sp + 16));
+  } else {
+    dosemu_le_exc_dump32(vec);
+  }
+  s_exit_code = 1;
   shutdown_requested = true;
   return CBRET_STOP;
 }
+
+Bitu dosemu_le_exc_handle16(int vec) {
+  if (vec < 0) {
+    const PhysPt sp = SegPhys(ss) + reg_esp;
+    std::fprintf(stderr,
+        "dosemu: LE client PM exception (vector unknown) -- terminating.\n"
+        "  SS:SP = %04x:%04x  stack = %04x %04x %04x %04x %04x %04x %04x %04x\n"
+        "  (no-error-code frame = IP CS FLAGS; error-code frame = ERR IP CS FLAGS)\n",
+        SegValue(ss), reg_sp,
+        mem_readw(sp), mem_readw(sp + 2), mem_readw(sp + 4), mem_readw(sp + 6),
+        mem_readw(sp + 8), mem_readw(sp + 10), mem_readw(sp + 12), mem_readw(sp + 14));
+  } else {
+    dosemu_le_exc_dump16(vec);
+  }
+  s_exit_code = 1;
+  shutdown_requested = true;
+  return CBRET_STOP;
+}
+
+// One-size-fits-all dosbox callbacks, invoked by all 32 vectors of
+// the matching gate bitness.  Vector is unknown at handler entry so
+// we log "unknown vector" plus the stacked frame; root-causing any
+// specific exception still needs the fault CS:EIP which we do have.
+Bitu dosemu_le_exc_any32() { return dosemu_le_exc_handle32(-1); }
+Bitu dosemu_le_exc_any16() { return dosemu_le_exc_handle16(-1); }
 RealPt s_rm_stop_ptr = 0;
 
 // No-op callback handed back by AX=0305/0306 as state-save and raw-
@@ -3718,11 +3818,11 @@ bool le_install_descriptors(std::vector<LeObject> &objects) {
 // just CR0.PE=1 + CPU_LLDT + segment loads + CPU_JMP.  We don't flip
 // CR0 here: subsequent code in load_exe_at and the return up to
 // dosemu_startup would run in PM with RM CS, which corrupts things.
-void le_launch_pm_prep() {
-  // Use 32-bit PM as the default for LE (most LE binaries are 32-bit
-  // BIG-flag objects, and the INT 21h/31h 32-bit IDT gates handle
-  // both 16- and 32-bit callers via the `66 CF` IRETD shim path).
-  const bool bits32 = true;
+void le_launch_pm_prep(bool bits32) {
+  // Gate bitness must match the entry object's BIG flag.  A 32-bit
+  // gate pushes a 12-byte frame and IRETD pops 12 bytes; a 16-bit
+  // gate pushes 6 bytes and IRET pops 6 bytes.  Mixing the two
+  // results in garbage on the stack and an immediate #GP cascade.
   // GDT[1..4] are unused by LE clients (they use LDT selectors for
   // everything) but pm_setup_gdt_and_idt writes valid descriptors
   // covering the current RM segments anyway -- harmless.
@@ -3731,18 +3831,17 @@ void le_launch_pm_prep() {
   // Do NOT zero the LDT -- le_install_descriptors has already filled
   // our slots and flipping those to zero would lose them.
 
-  // Install a catch-all PM exception handler for vectors 0x00..0x1F.
+  // Install per-vector PM exception handlers for 0x00..0x1F.
   // Without these, a client #GP (or any other early fault) sends the
   // CPU to an uninstalled IDT gate and dosbox aborts with "Gate
-  // Selector points to illegal descriptor".  Our handler logs the
-  // fault CS:EIP and terminates cleanly with rc=1 so the user gets
-  // actionable output.
-  if (s_le_exc_cb32_off) {
-    for (int v = 0; v < 0x20; ++v) {
-      // INT 0x3 is the breakpoint instruction -- harmless but the
-      // debugger relies on it, so still route through our handler.
-      write_idt_gate(v, PM_CB_SEL, s_le_exc_cb32_off, true);
-    }
+  // Selector points to illegal descriptor".  Gate bitness MUST match
+  // the entry obj's default size: 32-bit client -> 32-bit gates
+  // (CB_IRETD pops 12 bytes) or 16-bit client -> 16-bit gates
+  // (CB_IRET pops 6 bytes).  Mixing produces corrupt frames.
+  const uint16_t cb_off = bits32 ? s_le_exc_cb32_off : s_le_exc_cb16_off;
+  if (cb_off) {
+    for (int v = 0; v < 0x20; ++v)
+      write_idt_gate(v, PM_CB_SEL, cb_off, bits32);
   }
 }
 
@@ -3822,7 +3921,9 @@ bool load_exe_at(const std::string &path, uint16_t psp_seg, InitialRegs &out) {
           eo.ldt_sel, entry_eip, so.ldt_sel, stack_esp, ds_sel);
 
       // Stage GDT/IDT so dosemu_startup just has to flip CR0 and jump.
-      le_launch_pm_prep();
+      // Gate bitness matches entry object's BIG flag -- mismatched
+      // bitness produces corrupt frames on exceptions or INTs.
+      le_launch_pm_prep(eo.is_big);
 
       out.is_pm    = true;
       out.is_32bit = eo.is_big;
@@ -4078,16 +4179,20 @@ void dosemu_startup() {
     s_int31_cb32_off = static_cast<uint16_t>(rp & 0xFFFF);
   }
 
-  // LE exception handler, shared by IDT vectors 0x00..0x1F on the
-  // LE launch path.  CB_IRETD matches the 32-bit PM gate's 12-byte
-  // frame -- LE entry is always 32-bit-ready (see le_launch_pm_prep).
-  CALLBACK_HandlerObject le_exc_cb;
-  le_exc_cb.Install(&dosemu_le_exception, CB_IRETD,
-                    "dosemu LE exception (vectors 0x00..0x1F)");
-  {
-    const RealPt rp = le_exc_cb.Get_RealPointer();
-    s_le_exc_cb32_off = static_cast<uint16_t>(rp & 0xFFFF);
-  }
+  // LE exception handlers: one 16-bit + one 32-bit callback shared
+  // by all 32 vectors.  Per-vector dispatch would need 64 callbacks
+  // which exhausts dosbox's CB_MAX (128 total, most pre-consumed by
+  // dosbox itself + our DPMI infrastructure).  Vector info lost; we
+  // still report CS:EIP and a stack dump so the user can diagnose.
+  CALLBACK_HandlerObject le_exc_cb32, le_exc_cb16;
+  le_exc_cb32.Install(&dosemu_le_exc_any32, CB_IRETD,
+                      "dosemu LE exception (32-bit)");
+  s_le_exc_cb32_off = static_cast<uint16_t>(
+      le_exc_cb32.Get_RealPointer() & 0xFFFF);
+  le_exc_cb16.Install(&dosemu_le_exc_any16, CB_IRET,
+                      "dosemu LE exception (16-bit)");
+  s_le_exc_cb16_off = static_cast<uint16_t>(
+      le_exc_cb16.Get_RealPointer() & 0xFFFF);
 
   // INT 2Fh handler for DPMI detection (stage 2).  Reports DPMI present
   // with a real-mode entry point that currently fails the mode switch.
