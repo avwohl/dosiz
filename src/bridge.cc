@@ -86,13 +86,26 @@ std::map<char, std::string> s_drive_cwd;
 // starting at 5 (DOS conventionally reserves 0..4 for stdin/out/err/aux/prn).
 constexpr int FIRST_FILE_HANDLE = 5;
 constexpr int MAX_HANDLES       = 20;
-std::map<uint16_t, int>     s_handles;  // DOS handle -> host fd
 
-// Drive table: letter -> host directory.  Populated (currently minimally)
-// from the CLI working directory.  cfg.drives from .cfg files will feed in
-// additional entries in a later iteration.
+struct HostHandle {
+  int  fd          = -1;
+  bool text_mode   = false;
+  // For text-mode reads: an LF in the host file expands to CR LF for the
+  // guest.  If CX fills up right after we emitted CR, the trailing LF is
+  // held here until the next read call.
+  int  read_pending = -1;
+};
+std::map<uint16_t, HostHandle> s_handles;
+
+// Drive table: letter -> host directory.  Populated from cfg.drives (with
+// CWD as a fallback for C: if no drives are specified).
 std::map<char, std::string> s_drives;
 char                        s_current_drive = 'C';
+
+// Default translation mode for newly-opened files.  When true, AH=40h
+// writes strip CR bytes and AH=3Fh reads expand LF to CR LF -- gives the
+// DOS program classic CRLF semantics while the host file stays Unix-LF.
+bool                        s_default_text_mode = false;
 
 // --- Host <-> guest helpers -----------------------------------------------
 
@@ -132,10 +145,10 @@ std::string dos_to_host(const std::string &dos_path) {
 }
 
 // Allocate the next free DOS handle for a given host fd.
-int allocate_handle(int fd) {
+int allocate_handle(int fd, bool text_mode) {
   for (int h = FIRST_FILE_HANDLE; h < MAX_HANDLES; ++h) {
     if (s_handles.find(h) == s_handles.end()) {
-      s_handles[h] = fd;
+      s_handles[h] = HostHandle{fd, text_mode, -1};
       return h;
     }
   }
@@ -179,9 +192,9 @@ Bitu dosemu_int21() {
       const std::string dos_path  = read_dos_string(SegValue(ds), reg_dx);
       const std::string host_path = dos_to_host(dos_path);
       int fd = ::open(host_path.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
-      if (fd < 0) { return_error(0x05); break; }  // 0x05 = access denied
-      int h = allocate_handle(fd);
-      if (h < 0) { ::close(fd); return_error(0x04); break; }  // 0x04 = too many open files
+      if (fd < 0) { return_error(0x05); break; }
+      int h = allocate_handle(fd, s_default_text_mode);
+      if (h < 0) { ::close(fd); return_error(0x04); break; }
       reg_ax = static_cast<uint16_t>(h);
       set_cf(false);
       return CBRET_NONE;
@@ -197,8 +210,8 @@ Bitu dosemu_int21() {
         case 2: flags = O_RDWR;   break;
       }
       int fd = ::open(host_path.c_str(), flags);
-      if (fd < 0) { return_error(0x02); break; }  // 0x02 = file not found
-      int h = allocate_handle(fd);
+      if (fd < 0) { return_error(0x02); break; }
+      int h = allocate_handle(fd, s_default_text_mode);
       if (h < 0) { ::close(fd); return_error(0x04); break; }
       reg_ax = static_cast<uint16_t>(h);
       set_cf(false);
@@ -207,46 +220,83 @@ Bitu dosemu_int21() {
 
     case 0x3E: {  // Close handle in BX.
       const auto it = s_handles.find(reg_bx);
-      if (it == s_handles.end()) { return_error(0x06); break; }  // invalid handle
-      ::close(it->second);
+      if (it == s_handles.end()) { return_error(0x06); break; }
+      ::close(it->second.fd);
       s_handles.erase(it);
       set_cf(false);
       return CBRET_NONE;
     }
 
     case 0x3F: {  // Read from handle BX, CX bytes, into DS:DX.
-      int fd = -1;
-      if (reg_bx == 0) fd = STDIN_FILENO;
-      else {
+      int  fd        = -1;
+      bool text_mode = false;
+      int *pending   = nullptr;
+      static int stdin_pending = -1;
+      if (reg_bx == 0) {
+        fd = STDIN_FILENO;
+        text_mode = s_default_text_mode;
+        pending = &stdin_pending;
+      } else {
         auto it = s_handles.find(reg_bx);
         if (it == s_handles.end()) { return_error(0x06); break; }
-        fd = it->second;
+        fd = it->second.fd;
+        text_mode = it->second.text_mode;
+        pending = &it->second.read_pending;
       }
-      std::vector<uint8_t> buf(reg_cx);
-      ssize_t n = ::read(fd, buf.data(), reg_cx);
-      if (n < 0) { return_error(0x05); break; }
       const PhysPt dst = SegValue(ds) * 16 + reg_dx;
-      for (ssize_t i = 0; i < n; ++i) mem_writeb(dst + i, buf[i]);
-      reg_ax = static_cast<uint16_t>(n);
+      uint16_t out = 0;
+      while (out < reg_cx) {
+        if (text_mode && *pending >= 0) {
+          mem_writeb(dst + out++, static_cast<uint8_t>(*pending));
+          *pending = -1;
+          continue;
+        }
+        uint8_t byte;
+        ssize_t n = ::read(fd, &byte, 1);
+        if (n < 0)  { return_error(0x05); set_cf(true); reg_ax = out; return CBRET_NONE; }
+        if (n == 0) break;  // EOF
+        if (text_mode && byte == 0x1A) break;    // DOS text-EOF marker
+        if (text_mode && byte == '\n') {
+          mem_writeb(dst + out++, '\r');
+          if (out < reg_cx) mem_writeb(dst + out++, '\n');
+          else              *pending = '\n';
+        } else {
+          mem_writeb(dst + out++, byte);
+        }
+      }
+      reg_ax = out;
       set_cf(false);
       return CBRET_NONE;
     }
 
     case 0x40: {  // Write to handle BX, CX bytes, from DS:DX.
-      int fd = -1;
-      if      (reg_bx == 1) fd = STDOUT_FILENO;
-      else if (reg_bx == 2) fd = STDERR_FILENO;
+      int  fd        = -1;
+      bool text_mode = false;
+      if      (reg_bx == 1) { fd = STDOUT_FILENO; }
+      else if (reg_bx == 2) { fd = STDERR_FILENO; }
       else {
         auto it = s_handles.find(reg_bx);
         if (it == s_handles.end()) { return_error(0x06); break; }
-        fd = it->second;
+        fd = it->second.fd;
+        text_mode = it->second.text_mode;
       }
       std::vector<uint8_t> buf(reg_cx);
       const PhysPt src = SegValue(ds) * 16 + reg_dx;
       for (uint16_t i = 0; i < reg_cx; ++i) buf[i] = mem_readb(src + i);
-      ssize_t n = ::write(fd, buf.data(), reg_cx);
+      if (text_mode) {
+        // DOS sends CR LF for newlines.  Host wants Unix-style LF.  Strip
+        // CR bytes entirely -- lone CRs are rare and better dropped than
+        // preserved (CRLF -> LF is the dominant case).
+        size_t w = 0;
+        for (size_t i = 0; i < buf.size(); ++i)
+          if (buf[i] != '\r') buf[w++] = buf[i];
+        buf.resize(w);
+      }
+      ssize_t n = ::write(fd, buf.data(), buf.size());
       if (n < 0) { return_error(0x05); break; }
-      reg_ax = static_cast<uint16_t>(n);
+      // Report the caller's full byte count as consumed even when text-mode
+      // filtering compressed the output -- that's what DOS programs expect.
+      reg_ax = reg_cx;
       set_cf(false);
       return CBRET_NONE;
     }
@@ -258,10 +308,11 @@ Bitu dosemu_int21() {
       if (reg_al == 1) whence = SEEK_CUR;
       if (reg_al == 2) whence = SEEK_END;
       off_t off = (static_cast<int32_t>(reg_cx) << 16) | reg_dx;
-      off_t pos = ::lseek(it->second, off, whence);
-      if (pos < 0) { return_error(0x19); break; }  // seek error
+      off_t pos = ::lseek(it->second.fd, off, whence);
+      if (pos < 0) { return_error(0x19); break; }
       reg_ax = static_cast<uint16_t>(pos & 0xFFFF);
       reg_dx = static_cast<uint16_t>((pos >> 16) & 0xFFFF);
+      it->second.read_pending = -1;  // invalidate text-mode read buffer
       set_cf(false);
       return CBRET_NONE;
     }
@@ -580,30 +631,45 @@ void dosemu_startup() {
 
 } // namespace
 
-int run_program(const char *program, const char *const *args, size_t nargs,
-                bool headless, int verbose) {
-  s_program   = program;
-  s_args.clear();
-  for (size_t i = 0; i < nargs; ++i) s_args.emplace_back(args[i]);
+int run_program(const dosemu::Config &cfg) {
+  s_program = cfg.program;
+  s_args    = cfg.args;
   s_exit_code = 0;
   s_handles.clear();
+  s_drives.clear();
+  s_drive_cwd.clear();
+  s_mem_highwater = 0x2000;
 
-  // Default drive mount: C: = process CWD.  cfg.drives from .cfg files will
-  // override / extend this in a later iteration.
-  char cwd[4096];
-  if (getcwd(cwd, sizeof(cwd))) s_drives['C'] = cwd;
-  else                          s_drives['C'] = ".";
-  s_current_drive = 'C';
+  // Populate drives from .cfg; fall back to C: = process CWD when empty.
+  for (const auto &d : cfg.drives) s_drives[d.letter] = d.host_path;
+  if (s_drives.empty()) {
+    char cwd[4096];
+    if (getcwd(cwd, sizeof(cwd))) s_drives['C'] = cwd;
+    else                          s_drives['C'] = ".";
+  }
+  s_current_drive = s_drives.begin()->first;
 
-  loguru::g_stderr_verbosity = (verbose >= 2) ? loguru::Verbosity_INFO
-                              : (verbose >= 1) ? loguru::Verbosity_WARNING
-                                               : loguru::Verbosity_ERROR;
+  // Default mode: if the user asked for Text (or Auto with eol_convert on),
+  // newly-opened handles translate CR LF <-> LF host-side.
+  s_default_text_mode =
+      (cfg.default_mode == FileMode::Text) ||
+      (cfg.default_mode == FileMode::Auto && cfg.default_eol_convert);
+  // Auto-default with eol_convert=true is historical cpmemu behaviour but
+  // can surprise users running binary tools.  Enable only when the user
+  // asked for text explicitly; Auto falls back to binary.
+  if (cfg.default_mode == FileMode::Auto) s_default_text_mode = false;
+
+  loguru::g_stderr_verbosity = (cfg.verbose >= 2) ? loguru::Verbosity_INFO
+                              : (cfg.verbose >= 1) ? loguru::Verbosity_WARNING
+                                                   : loguru::Verbosity_ERROR;
 
   static const char *dummy_argv[] = {"dosemu", nullptr};
   auto cmdline = std::make_unique<CommandLine>(1, dummy_argv);
-  control      = std::make_unique<Config>(cmdline.get());
+  // ::Config is dosbox's Config (in the global namespace); without the
+  // leading :: the nested dosemu::Config shadows it.
+  control      = std::make_unique<::Config>(cmdline.get());
 
-  if (headless) {
+  if (cfg.headless) {
     setenv("SDL_VIDEODRIVER", "offscreen", 1);
     setenv("SDL_AUDIODRIVER", "dummy", 1);
   }

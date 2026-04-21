@@ -67,6 +67,26 @@ jobs:
           echo "$output" | grep -q 'alloc=0x2000'
           echo "$output" | grep -q 'int21-set-ok'
 
+      - name: Smoke (.cfg drives + default_mode=text)
+        run: |
+          workdir=$(mktemp -d)
+          cat > "$workdir/write.cfg" <<EOF
+          program = $GITHUB_WORKSPACE/tests/WRITE.COM
+          args = from-cfg
+          drive_C = $workdir
+          default_mode = text
+          EOF
+          build/dosemu "$workdir/write.cfg" 2>/dev/null
+          # In text mode the \r before \n must be stripped.  grep -P ensures
+          # the shell literal interprets the escapes as expected.
+          if grep -qU $'\r' "$workdir/WROTE.TXT"; then
+            echo "FAIL: WROTE.TXT still contains CR in text mode"
+            xxd "$workdir/WROTE.TXT"
+            exit 1
+          fi
+          grep -q 'dosemu-wrote-ok' "$workdir/WROTE.TXT"
+          grep -q 'from-cfg'        "$workdir/WROTE.TXT"
+
       - name: Smoke (run WRITE.COM, verify file I/O + command tail)
         run: |
           workdir=$(mktemp -d)
