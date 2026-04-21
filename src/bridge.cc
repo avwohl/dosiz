@@ -626,9 +626,32 @@ constexpr uint16_t PM_DS_SEL  = 0x10;
 constexpr uint16_t PM_SS_SEL  = 0x18;
 constexpr uint16_t PM_ES_SEL  = 0x20;
 constexpr uint16_t PM_CB_SEL  = 0x28;         // selector for dosbox's CB_SEG
+constexpr uint16_t PM_LDT_SEL = 0x30;         // GDT[6]: LDT descriptor itself
 
 constexpr uint16_t IDT_SEG    = 0x1A00;       // physical 0x1A000
 constexpr uint16_t IDT_LIMIT  = 0x7FF;        // 256 entries * 8 bytes - 1
+
+// LDT for DPMI client-allocated descriptors (INT 31h AX=0000/0001/0002).
+// 256 entries * 8 bytes = 2KB, placed between the IDT and the MCB arena.
+// Index 0 in the LDT is reserved null, so client selectors start at 0x000C
+// (idx=1, TI=1, RPL=0 -- we run the client at ring 0 to keep the host
+// simple; DPMI spec nominally wants RPL=3 but nothing we care about
+// distinguishes the two in dosbox's PM core).
+constexpr uint16_t LDT_SEG    = 0x1B00;       // physical 0x1B000
+constexpr uint16_t LDT_BYTES  = 256u * 8u;    // 2KB
+constexpr uint16_t LDT_COUNT  = 256;
+
+// In-use bitmap: 1 bit per LDT slot, bit set = allocated.  LDT slot 0 is
+// treated as permanently reserved (null descriptor) so it always reads
+// as allocated, keeping "first-fit from index 1" logic simple.
+uint8_t s_ldt_in_use[(LDT_COUNT + 7) / 8];
+
+// AX=0002 "segment to descriptor" must return the same selector for
+// repeated conversions of the same real-mode segment, per DPMI spec.
+// A sparse map real-mode-segment (0..0xFFFF) -> LDT index caches that.
+// 0 means "not yet aliased" (LDT slot 0 is reserved so never a valid
+// cached target).  128KB static; fine for a host process.
+uint16_t s_seg2desc_cache[65536];
 
 // Real pointer of our INT 21h callback.  Captured in dosemu_startup and
 // used to build an IDT interrupt gate when transitioning to PM, so INT 21h
@@ -717,6 +740,18 @@ Bitu dosemu_dpmi_entry() {
   // stub emits 16-bit instructions (FB/CF/CB), so a 32-bit client's
   // INT 21h hits a 16-bit compatibility sub-segment.
   write_gdt_descriptor(5, 0xF0000, 0xFFFF, 0x9A);                    // cb
+  // GDT[6] = LDT descriptor.  Access byte 0x82 = present, DPL=0, system,
+  // LDT type; granularity byte has D=0 (system descriptors ignore D but
+  // keep the nibble clean).
+  write_gdt_descriptor(6, LDT_SEG * 16u, LDT_BYTES - 1, 0x82);
+
+  // Zero the LDT so every unallocated slot reads as a not-present
+  // descriptor (access byte 0), then reset the in-use bitmap to match.
+  for (uint32_t off = 0; off < LDT_BYTES; ++off)
+    mem_writeb(LDT_SEG * 16u + off, 0);
+  for (auto &b : s_ldt_in_use) b = 0;
+  s_ldt_in_use[0] |= 0x01;   // slot 0 reserved (null)
+  for (auto &c : s_seg2desc_cache) c = 0;
 
   CPU_LGDT(GDT_LIMIT, GDT_SEG * 16u);
 
@@ -747,6 +782,11 @@ Bitu dosemu_dpmi_entry() {
   // Flip CR0.PE -- CPU is now in protected mode.  dosbox's CPU core
   // respects the CR0 write.
   CPU_SET_CRX(0, 0x00000001);      // PE=1, all other bits off
+
+  // LLDT is #UD in real mode; issue it now that PE=1 is set.  Points
+  // LDTR at GDT[6] = our LDT.  Subsequent INT 31h AX=0000/0001/0002
+  // allocate/free/convert descriptors inside this LDT.
+  CPU_LLDT(PM_LDT_SEL);
 
   // Load PM selectors into DS/SS/ES (CS gets set by the retf).
   CPU_SetSegGeneral(ds, PM_DS_SEL);
@@ -852,6 +892,64 @@ Bitu dosemu_int16() {
 // descriptor in the GDT we installed at GDT_SEG; selectors outside
 // GDT_LIMIT return AX=8022h (invalid selector).  LDT management (LDT
 // descriptor allocation) is still stage 4 proper and not wired up.
+// Descriptor helpers shared by AX=0000/0001/0002 and AX=0006/0007.
+// `selector_table_base` returns LDT_SEG*16 if TI=1, GDT_SEG*16 otherwise.
+// `selector_is_valid` rejects selectors whose index is out of range for
+// the chosen table (GDT: 8 entries, LDT: 256 entries), or slot 0 for
+// LDT (reserved null).
+inline PhysPt selector_table_base(uint16_t sel) {
+  return (sel & 0x4) ? LDT_SEG * 16u : GDT_SEG * 16u;
+}
+inline bool selector_is_valid(uint16_t sel) {
+  const uint16_t idx = sel >> 3;
+  if (sel & 0x4) {
+    if (idx == 0 || idx >= LDT_COUNT) return false;
+  } else {
+    if ((idx * 8u + 7u) > GDT_LIMIT) return false;
+  }
+  return true;
+}
+
+// Write a data/code descriptor into LDT[idx].  Base/limit/access mirror
+// write_gdt_descriptor; used by AX=0000 (installs a present-but-empty
+// slot) and AX=0002 (installs a real-mode-segment alias).
+void write_ldt_descriptor(int idx, uint32_t base, uint32_t limit,
+                          uint8_t access, bool bits32 = false) {
+  const PhysPt p = LDT_SEG * 16u + idx * 8u;
+  mem_writeb(p + 0, limit & 0xFF);
+  mem_writeb(p + 1, (limit >> 8) & 0xFF);
+  mem_writeb(p + 2, base & 0xFF);
+  mem_writeb(p + 3, (base >> 8) & 0xFF);
+  mem_writeb(p + 4, (base >> 16) & 0xFF);
+  mem_writeb(p + 5, access);
+  const uint8_t flags = bits32 ? 0x40 : 0x00;
+  mem_writeb(p + 6, ((limit >> 16) & 0x0F) | flags);
+  mem_writeb(p + 7, (base >> 24) & 0xFF);
+}
+
+// LDT allocation bitmap helpers.
+inline bool ldt_bit(uint16_t idx) {
+  return (s_ldt_in_use[idx >> 3] >> (idx & 7)) & 1;
+}
+inline void ldt_set(uint16_t idx, bool v) {
+  if (v) s_ldt_in_use[idx >> 3] |=  (1u << (idx & 7));
+  else   s_ldt_in_use[idx >> 3] &= ~(1u << (idx & 7));
+}
+
+// Find a run of `count` consecutive free slots starting at or after 1.
+// Returns the first index, or 0 if no run is available (0 doubles as
+// "not found" because slot 0 is reserved and always reads as in-use).
+uint16_t ldt_find_run(uint16_t count) {
+  uint16_t start = 0;
+  uint16_t have  = 0;
+  for (uint16_t i = 1; i < LDT_COUNT; ++i) {
+    if (ldt_bit(i)) { have = 0; start = 0; continue; }
+    if (have == 0) start = i;
+    if (++have == count) return start;
+  }
+  return 0;
+}
+
 Bitu dosemu_int31() {
   if (std::getenv("DOSEMU_TRACE")) {
     std::fprintf(stderr, "[int31] AX=%04x BX=%04x CX=%04x DX=%04x\n",
@@ -871,16 +969,85 @@ Bitu dosemu_int31() {
       return CBRET_NONE;
     }
 
-    case 0x0006: {  // Get segment base address
-      // Only GDT selectors in our 8-entry table are valid.  RPL/TI bits
-      // are masked off before indexing (host treats ring-0 GDT only).
+    case 0x0000: {  // Allocate LDT descriptors
+      // Input:  CX = number of descriptors (1..LDT_COUNT-1)
+      // Output: AX = base selector; subsequent selectors are +8 apart.
+      // Error:  CF=1, AX=8011h (descriptor unavailable).
+      const uint16_t count = reg_cx;
+      if (count == 0 || count >= LDT_COUNT) {
+        reg_ax = 0x8021; set_cf(true); return CBRET_NONE;
+      }
+      const uint16_t start = ldt_find_run(count);
+      if (start == 0) {
+        reg_ax = 0x8011; set_cf(true); return CBRET_NONE;
+      }
+      for (uint16_t i = 0; i < count; ++i) {
+        ldt_set(start + i, true);
+        // Install a placeholder data descriptor: base 0, limit 0, access
+        // 0x92 (present, DPL=0, data r/w).  The client is expected to
+        // call AX=0007 (set base) + a size service before using it, so
+        // a base-0/limit-0 slot is valid-but-empty.
+        write_ldt_descriptor(start + i, 0, 0, 0x92);
+      }
+      reg_ax = (start << 3) | 0x04;      // TI=1, RPL=0
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
+    case 0x0001: {  // Free LDT descriptor
+      // Input: BX = selector.  Rejects GDT selectors (TI=0) and slot 0.
+      if (!(reg_bx & 0x4) || !selector_is_valid(reg_bx)) {
+        reg_ax = 0x8022; set_cf(true); return CBRET_NONE;
+      }
       const uint16_t idx = reg_bx >> 3;
-      if ((reg_bx & 0x4) || (idx * 8u + 7u) > GDT_LIMIT) {
-        reg_ax = 0x8022;
-        set_cf(true);
+      if (!ldt_bit(idx)) {
+        reg_ax = 0x8022; set_cf(true); return CBRET_NONE;
+      }
+      ldt_set(idx, false);
+      write_ldt_descriptor(idx, 0, 0, 0);   // mark not-present
+      // Drop any segment-to-descriptor cache entry that aliased this idx.
+      for (uint32_t s = 0; s < 65536; ++s) {
+        if (s_seg2desc_cache[s] == idx) s_seg2desc_cache[s] = 0;
+      }
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
+    case 0x0002: {  // Segment to descriptor
+      // Input:  BX = real-mode segment value
+      // Output: AX = LDT selector aliasing that segment (base = BX*16,
+      //         limit = 64K-1, data r/w).  Repeated calls with the same
+      //         BX must return the same selector per DPMI spec.
+      const uint16_t seg = reg_bx;
+      if (s_seg2desc_cache[seg] != 0) {
+        reg_ax = (s_seg2desc_cache[seg] << 3) | 0x04;
+        set_cf(false);
         return CBRET_NONE;
       }
-      const PhysPt p = GDT_SEG * 16u + idx * 8u;
+      const uint16_t idx = ldt_find_run(1);
+      if (idx == 0) {
+        reg_ax = 0x8011; set_cf(true); return CBRET_NONE;
+      }
+      ldt_set(idx, true);
+      write_ldt_descriptor(idx, seg * 16u, 0xFFFF, 0x92);
+      s_seg2desc_cache[seg] = idx;
+      reg_ax = (idx << 3) | 0x04;
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
+    case 0x0003: {  // Get selector increment
+      reg_ax = 8;
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
+    case 0x0006: {  // Get segment base address (GDT or LDT)
+      if (!selector_is_valid(reg_bx)) {
+        reg_ax = 0x8022; set_cf(true); return CBRET_NONE;
+      }
+      const uint16_t idx = reg_bx >> 3;
+      const PhysPt p = selector_table_base(reg_bx) + idx * 8u;
       const uint32_t base = mem_readb(p + 2)
                           | (mem_readb(p + 3) << 8)
                           | (mem_readb(p + 4) << 16)
@@ -891,16 +1058,14 @@ Bitu dosemu_int31() {
       return CBRET_NONE;
     }
 
-    case 0x0007: {  // Set segment base address
-      const uint16_t idx = reg_bx >> 3;
-      if ((reg_bx & 0x4) || idx == 0 || (idx * 8u + 7u) > GDT_LIMIT) {
-        reg_ax = 0x8022;
-        set_cf(true);
-        return CBRET_NONE;
+    case 0x0007: {  // Set segment base address (GDT or LDT)
+      if (!selector_is_valid(reg_bx)) {
+        reg_ax = 0x8022; set_cf(true); return CBRET_NONE;
       }
       const uint32_t base = (static_cast<uint32_t>(reg_cx) << 16)
                           | reg_dx;
-      const PhysPt p = GDT_SEG * 16u + idx * 8u;
+      const uint16_t idx = reg_bx >> 3;
+      const PhysPt p = selector_table_base(reg_bx) + idx * 8u;
       mem_writeb(p + 2, base & 0xFF);
       mem_writeb(p + 3, (base >> 8) & 0xFF);
       mem_writeb(p + 4, (base >> 16) & 0xFF);

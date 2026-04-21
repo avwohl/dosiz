@@ -113,6 +113,18 @@ jobs:
           echo "dosemu output: $out"
           echo "$out" | grep -q 'dpmi-stage4=ok'
 
+      - name: DPMI stage 4b: LDT descriptor alloc/free/convert
+        run: |
+          # Exercises INT 31h AX=0000 (alloc N LDT descriptors),
+          # AX=0001 (free), AX=0002 (segment-to-descriptor, repeat-call
+          # caching), AX=0003 (selector increment = 8), plus AX=0007
+          # extended to accept LDT selectors.  The alias for the PSP
+          # segment is validated by reading the INT 20h marker word
+          # through the newly-allocated LDT-selector-loaded ES.
+          out=$(build/dosemu tests/DPMI_STAGE4B.COM 2>/dev/null)
+          echo "dosemu output: $out"
+          echo "$out" | grep -q 'dpmi-stage4b=ok'
+
       - name: DPMI stage 6: alloc, write/read round-trip, free
         run: |
           # INT 31h AX=0501 allocates 256 bytes from the MCB arena and
