@@ -11,14 +11,23 @@ CP/M BDOS.
 
 	dosemu tests/HELLO.COM           → prints dosemu-hello-ok
 	dosemu tests/HELLO.EXE           → prints dosemu-hello-exe-ok
+	dosemu tests/SYSCALLS.COM        → dosver=6.22 / alloc=0x2000 / int21-set-ok
 	dosemu tests/WRITE.COM ci-tail   → creates WROTE.TXT in CWD
 
 dosbox-staging is linked in-process for CPU + PC hardware. DOS INT 21h is
-handled entirely by C++ host code: AH=02 (putchar), AH=09 (print string),
-AH=3Ch (create), AH=3Dh (open), AH=3Eh (close), AH=3Fh (read), AH=40h
-(write), AH=42h (seek), AH=4Ch (exit). PSP command tail at offset 80h is
-populated from argv. Files on the guest's `C:` map to the host CWD.
-No subprocess, no dosbox shell, no generated dosbox.conf.
+handled entirely by C++ host code. Currently implemented:
+
+	02  putchar            25  set int vector     3F  read handle
+	09  print string       30  get DOS version    40  write handle
+	0E  set drive          35  get int vector     42  seek handle
+	19  get drive          3B  chdir              44  ioctl (basic)
+	3C  create handle      3D  open handle        47  get cwd
+	3E  close handle       48  allocate (bump)    49  free (no-op)
+	4A  resize (stub)      4C  exit
+
+PSP command tail at offset 80h is populated from argv. Files on the
+guest's `C:` drive map to the host CWD. No subprocess, no dosbox shell,
+no generated dosbox.conf.
 
 ## Building
 

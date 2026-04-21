@@ -72,6 +72,15 @@ std::string                 s_program;
 std::vector<std::string>    s_args;
 int                         s_exit_code = 0;
 
+// Bump allocator for AH=48/49/4A.  Host paragraphs above this segment are
+// assumed free; allocations are carved in order and never actually freed.
+// Good enough for C runtimes that malloc once at startup.
+uint16_t                    s_mem_highwater = 0x2000;
+constexpr uint16_t          MEM_CEILING     = 0x9FFF; // top of conventional mem
+
+// Per-drive current directory (without drive letter, backslash-separated).
+std::map<char, std::string> s_drive_cwd;
+
 // DOS file-handle table.  Handles 0..2 are permanently bound to the host
 // stdin/stdout/stderr file descriptors.  User opens get the next free slot
 // starting at 5 (DOS conventionally reserves 0..4 for stdin/out/err/aux/prn).
@@ -253,6 +262,117 @@ Bitu dosemu_int21() {
       if (pos < 0) { return_error(0x19); break; }  // seek error
       reg_ax = static_cast<uint16_t>(pos & 0xFFFF);
       reg_dx = static_cast<uint16_t>((pos >> 16) & 0xFFFF);
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
+    case 0x0E: {  // Set default drive.  DL = 0 for A, 1 for B, ...
+      const char drive = 'A' + reg_dl;
+      if (s_drives.find(drive) != s_drives.end()) s_current_drive = drive;
+      reg_al = static_cast<uint8_t>(s_drives.size());   // number of drives
+      return CBRET_NONE;
+    }
+
+    case 0x19: {  // Get default drive -> AL
+      reg_al = static_cast<uint8_t>(s_current_drive - 'A');
+      return CBRET_NONE;
+    }
+
+    case 0x25: {  // Set interrupt vector: AL=vector, DS:DX=handler far ptr
+      const PhysPt ivt = reg_al * 4u;
+      mem_writeb(ivt,     static_cast<uint8_t>(reg_dx & 0xFF));
+      mem_writeb(ivt + 1, static_cast<uint8_t>((reg_dx >> 8) & 0xFF));
+      mem_writeb(ivt + 2, static_cast<uint8_t>(SegValue(ds) & 0xFF));
+      mem_writeb(ivt + 3, static_cast<uint8_t>((SegValue(ds) >> 8) & 0xFF));
+      return CBRET_NONE;
+    }
+
+    case 0x30: {  // Get DOS version.  Report 6.22, no OEM info.
+      reg_al = 6;
+      reg_ah = 22;
+      reg_bh = 0;
+      reg_bl = 0;
+      reg_cx = 0;
+      return CBRET_NONE;
+    }
+
+    case 0x35: {  // Get interrupt vector: AL=vector -> ES:BX = handler
+      const PhysPt ivt = reg_al * 4u;
+      const uint16_t off = mem_readb(ivt)     | (mem_readb(ivt + 1) << 8);
+      const uint16_t seg = mem_readb(ivt + 2) | (mem_readb(ivt + 3) << 8);
+      reg_bx = off;
+      SegSet16(es, seg);
+      return CBRET_NONE;
+    }
+
+    case 0x3B: {  // Change directory: DS:DX = path
+      const std::string dos_path  = read_dos_string(SegValue(ds), reg_dx);
+      const std::string host_path = dos_to_host(dos_path);
+      struct stat st;
+      if (stat(host_path.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
+        return_error(0x03);  // path not found
+        break;
+      }
+      // Track cwd for subsequent AH=47 queries.  Strip drive letter from
+      // DOS path so we store just the path-within-drive.
+      std::string rel = dos_path;
+      if (rel.size() >= 2 && rel[1] == ':') rel = rel.substr(2);
+      std::replace(rel.begin(), rel.end(), '/', '\\');
+      if (!rel.empty() && rel.front() == '\\') rel.erase(0, 1);
+      s_drive_cwd[s_current_drive] = rel;
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
+    case 0x44: {  // IOCTL.  Only AL=0 (get device info) minimally supported.
+      if (reg_al == 0x00) {
+        // Report "file" (no device flag) for our handles.  Real DOS sets
+        // bit 7 for character devices (stdin/stdout/con) -- many isatty
+        // checks live here.
+        if (reg_bx == 0 || reg_bx == 1 || reg_bx == 2) {
+          reg_dx = 0x80 | (reg_bx & 0x07); // char device, handle-as-dev-number
+        } else {
+          reg_dx = 0; // regular file
+        }
+        set_cf(false);
+        return CBRET_NONE;
+      }
+      return_error(0x01);  // invalid function
+      break;
+    }
+
+    case 0x47: {  // Get current directory: DL = drive (0=current), DS:SI = 64-byte buf
+      char drive = s_current_drive;
+      if (reg_dl != 0) drive = 'A' + (reg_dl - 1);
+      const std::string &cwd = s_drive_cwd[drive];   // "" if not set
+      const PhysPt dst = SegValue(ds) * 16 + reg_si;
+      for (size_t i = 0; i < cwd.size() && i < 63; ++i)
+        mem_writeb(dst + i, static_cast<uint8_t>(cwd[i]));
+      mem_writeb(dst + std::min(cwd.size(), size_t{63}), 0);
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
+    case 0x48: {  // Allocate BX paragraphs -> AX = segment, or CF=1 w/ BX = max
+      if (reg_bx == 0xFFFF || reg_bx > (MEM_CEILING - s_mem_highwater)) {
+        reg_bx = (s_mem_highwater > MEM_CEILING) ? 0
+                 : (MEM_CEILING - s_mem_highwater);
+        return_error(0x08);  // insufficient memory
+        break;
+      }
+      reg_ax = s_mem_highwater;
+      s_mem_highwater = static_cast<uint16_t>(s_mem_highwater + reg_bx);
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
+    case 0x49: {  // Free memory block at ES.  Bump allocator never frees.
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
+    case 0x4A: {  // Resize memory block at ES to BX paragraphs.  Stub: succeed
+                  // if shrinking or if the block is the last one we handed out.
       set_cf(false);
       return CBRET_NONE;
     }
