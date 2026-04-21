@@ -681,22 +681,33 @@ int allocate_handle(int fd, bool text_mode) {
 
 // --- INT 21h dispatcher ----------------------------------------------------
 
+// Gate-bitness tracker used by set_cf to find the FLAGS word in the
+// stacked interrupt frame.  Set by the bitness-specific callback
+// wrappers (dosemu_int21_32 etc.) before the real handler runs and
+// cleared afterwards.  Defaults to false (16-bit) because the
+// original real-mode INT 21h callback is entered with CS still
+// 16-bit and no gate prefix is present.
+bool s_int_gate_bits32 = false;
+
 void set_cf(bool val) {
-  // Flip bit 0 (CF) on the FLAGS word the CPU will pop on IRET.  The
-  // frame layout depends on how we were entered:
-  //   real mode / 16-bit gate:  [SS:SP+4] = 16-bit FLAGS
-  //   32-bit interrupt gate:    [SS:SP+8] = low word of 32-bit EFLAGS
-  // `cpu.code.big` tracks the current CS descriptor's D flag, which
-  // matches the gate bitness we installed.  `cpu.stack.big` selects
-  // SP vs ESP as the frame pointer.  `SegPhys(ss)` returns the PM
-  // descriptor base (or seg*16 in real mode) so this works in every
-  // mode without conditioning on cpu.pmode.  dosbox's CALLBACK_SCF
-  // assumes a real-mode SS and hits the wrong memory in PM -- we
-  // hit that when DPMI stage 4 introduced INT 31h handlers that
-  // actually depend on CF propagating back to the client.
+  // Flip bit 0 (CF) on the FLAGS word the CPU will pop on IRET.
+  // Frame layout is decided by the GATE that dispatched us, not the
+  // handler's CS -- our PM callbacks all run with CS = PM_CB_SEL
+  // (16-bit regardless), so cpu.code.big is always false in PM even
+  // when we got here through a 32-bit gate.  s_int_gate_bits32 is
+  // set by the bitness-specific dosbox callback wrapper so we know
+  // the real frame layout.
+  //
+  // Real-mode / 16-bit gate frame:  [SS:SP+4] = 16-bit FLAGS
+  // 32-bit gate frame:              [SS:SP+8] = low word of EFLAGS
+  //
+  // Writing the flag word into the wrong offset clobbers the CS
+  // word above it, which on IRETD comes back as "CS | 1" -- RPL=1
+  // != old CPL=0 -> "IRET:Outer level:Stack segment not writable".
+  // That's what tripped wd.exe repeatedly.
   const PhysPt ss_base    = SegPhys(ss);
   const uint32_t sp_val   = cpu.stack.big ? reg_esp : reg_sp;
-  const unsigned flags_off = cpu.code.big ? 8u : 4u;
+  const unsigned flags_off = (cpu.pmode && s_int_gate_bits32) ? 8u : 4u;
   const PhysPt addr = ss_base + sp_val + flags_off;
   uint16_t f = mem_readw(addr);
   if (val) f |=  0x0001;
@@ -2556,6 +2567,25 @@ Bitu dosemu_int31() {
   }
 }
 
+// Bitness-aware wrappers: dosbox callbacks can't pass parameters, so
+// we encode the gate bitness by registering a distinct C function for
+// each and having it toggle s_int_gate_bits32 around the real handler
+// call.  set_cf reads s_int_gate_bits32 to pick the right flag offset.
+Bitu dosemu_int21();
+Bitu dosemu_int31();
+Bitu dosemu_int21_bits32() {
+  s_int_gate_bits32 = true;
+  Bitu r = dosemu_int21();
+  s_int_gate_bits32 = false;
+  return r;
+}
+Bitu dosemu_int31_bits32() {
+  s_int_gate_bits32 = true;
+  Bitu r = dosemu_int31();
+  s_int_gate_bits32 = false;
+  return r;
+}
+
 Bitu dosemu_int21() {
   if (std::getenv("DOSEMU_TRACE")) {
     std::fprintf(stderr, "[trace] AH=%02x AL=%02x BX=%04x CX=%04x DX=%04x\n",
@@ -4163,7 +4193,7 @@ void dosemu_startup() {
   // deliberately keep the selector 16-bit and let the 66 prefix force
   // the 32-bit pop.
   CALLBACK_HandlerObject int21_cb32;
-  int21_cb32.Install(&dosemu_int21, CB_IRETD, "dosemu Int 21 (32-bit PM)");
+  int21_cb32.Install(&dosemu_int21_bits32, CB_IRETD, "dosemu Int 21 (32-bit PM)");
   {
     const RealPt rp = int21_cb32.Get_RealPointer();
     s_int21_cb32_seg = static_cast<uint16_t>((rp >> 16) & 0xFFFF);
@@ -4180,7 +4210,7 @@ void dosemu_startup() {
     s_int31_cb_off = static_cast<uint16_t>(rp & 0xFFFF);
   }
   CALLBACK_HandlerObject int31_cb32;
-  int31_cb32.Install(&dosemu_int31, CB_IRETD, "dosemu Int 31 (32-bit PM)");
+  int31_cb32.Install(&dosemu_int31_bits32, CB_IRETD, "dosemu Int 31 (32-bit PM)");
   {
     const RealPt rp = int31_cb32.Get_RealPointer();
     s_int31_cb32_off = static_cast<uint16_t>(rp & 0xFFFF);
