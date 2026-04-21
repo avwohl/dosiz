@@ -160,6 +160,40 @@ jobs:
           echo "dosemu output: $out"
           echo "$out" | grep -q 'hi-stdin'
 
+      - name: Smoke (CAT.COM read path, binary mode is passthrough)
+        run: |
+          workdir=$(mktemp -d)
+          printf 'line1\nline2\n' > "$workdir/input.txt"
+          cat > "$workdir/bin.cfg" <<EOF
+          program = $GITHUB_WORKSPACE/tests/CAT.COM
+          args = input.txt
+          drive_C = $workdir
+          default_mode = binary
+          EOF
+          out=$(build/dosemu "$workdir/bin.cfg" 2>/dev/null)
+          echo "out: $(printf '%q' "$out")"
+          # Output should match input exactly (\n preserved, no \r).
+          if printf '%s' "$out" | grep -qU $'\r'; then
+            echo "FAIL: binary mode inserted CR"; exit 1
+          fi
+          printf '%s' "$out" | grep -q 'line1'
+          printf '%s' "$out" | grep -q 'line2'
+
+      - name: Smoke (CAT.COM read path, auto mode expands LF to CRLF)
+        run: |
+          workdir=$(mktemp -d)
+          printf 'line1\nline2\n' > "$workdir/input.txt"
+          cat > "$workdir/txt.cfg" <<EOF
+          program = $GITHUB_WORKSPACE/tests/CAT.COM
+          args = input.txt
+          drive_C = $workdir
+          default_mode = auto
+          EOF
+          out=$(build/dosemu "$workdir/txt.cfg" 2>/dev/null)
+          echo "out: $(printf '%q' "$out")"
+          # Output must contain CR (LF was expanded to CRLF in text mode).
+          printf '%s' "$out" | grep -qU $'line1\r' || { echo "FAIL"; exit 1; }
+
       - name: Smoke (run WRITE.COM, verify file I/O + command tail)
         run: |
           workdir=$(mktemp -d)
