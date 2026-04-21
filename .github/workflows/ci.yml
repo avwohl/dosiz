@@ -368,6 +368,18 @@ jobs:
           echo "dosemu output: $out"
           echo "$out" | grep -q 'dpmi-stage6=ok'
 
+      - name: DOS/4GW detection probe (INT 21h AH=FFh DH=00h DL=78h)
+        run: |
+          # Watcom's 32-bit LE C runtime probes for DOS/4GW via this
+          # undocumented call before doing anything else.  Real DOS/4GW
+          # returns EAX=0x4734FFFF (high word = byte-swapped "4G"
+          # ASCII) -- per RBIL.  We return the same.  Without this,
+          # Watcom-compiled 32-bit binaries take their no-extender
+          # fallback path and GP-fault shortly after entry.
+          out=$(build/dosemu tests/DOS4G_PROBE.COM 2>/dev/null)
+          echo "dosemu output: $out"
+          echo "$out" | grep -q 'dos4g-probe=ok'
+
       - name: DPMI 1.0 extensions (AX=0401/000D/0506/0507/0508/0E00/0E01)
         run: |
           # Fixtures covering the DPMI 1.0 sub-functions CWSDPMI
