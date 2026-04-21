@@ -1,14 +1,6 @@
 #
 # dosemu/src/CMakeLists.txt
 #
-# Builds the dosemu CLI binary. It links against dosbox-staging (built as a
-# static library in the parent tree, ../dosbox-staging) plus the thin bridge
-# and translation layers in this directory.
-#
-# This file is a skeleton — sources are added as Phase 1+ work lands. For now
-# it just defines the target and project-level options so `cmake -S src -B build`
-# does not fail on a fresh clone.
-#
 cmake_minimum_required(VERSION 3.25)
 project(dosemu CXX C)
 
@@ -23,24 +15,36 @@ endif()
 add_compile_options(-Wall -Wextra -Wno-unused-parameter)
 
 # ---------------------------------------------------------------------------
-# dosbox-staging (git submodule at ../dosbox-staging, fetched during Phase 0)
+# dosemu CLI — subprocess-style wrapper around dosbox-staging.
+#
+# The dosbox-staging submodule lives at ${CMAKE_SOURCE_DIR}/../dosbox-staging
+# and is built separately via its own meson build system. At runtime dosemu
+# locates the dosbox binary via:
+#   1. --dosbox=PATH on the CLI
+#   2. DOSEMU_DOSBOX env var
+#   3. ../dosbox-staging/build/dosbox relative to the dosemu binary
+#   4. dosbox / dosbox-staging on PATH
 # ---------------------------------------------------------------------------
-set(DOSBOX_DIR "${CMAKE_SOURCE_DIR}/../dosbox-staging" CACHE PATH
-    "Path to dosbox-staging checkout")
+add_executable(dosemu
+  dosemu.cc
+  config.cc
+  dosbox_conf.cc
+)
 
-if(EXISTS "${DOSBOX_DIR}/CMakeLists.txt")
-  # Build dosbox as static lib.  The exact target name will be set once
-  # the submodule is wired in (Phase 1).
-  # add_subdirectory(${DOSBOX_DIR} dosbox-build EXCLUDE_FROM_ALL)
-  message(STATUS "dosbox-staging found at ${DOSBOX_DIR}")
-else()
-  message(WARNING
-    "dosbox-staging not found at ${DOSBOX_DIR}. "
-    "Run: git submodule update --init --recursive")
-endif()
+# Handy make target: build the bundled dosbox-staging if it hasn't been.
+add_custom_target(dosbox
+  COMMAND ${CMAKE_COMMAND} -E echo "Building dosbox-staging via meson..."
+  COMMAND meson setup --buildtype=release ${CMAKE_SOURCE_DIR}/../dosbox-staging/build ${CMAKE_SOURCE_DIR}/../dosbox-staging || true
+  COMMAND ninja -C ${CMAKE_SOURCE_DIR}/../dosbox-staging/build
+  VERBATIM
+)
 
 # ---------------------------------------------------------------------------
-# dosemu CLI (placeholder — real sources land in Phase 1)
+# Tests
 # ---------------------------------------------------------------------------
-add_executable(dosemu dosemu.cc)
-# target_link_libraries(dosemu PRIVATE dosbox)
+enable_testing()
+add_test(NAME smoke
+  COMMAND bash ${CMAKE_SOURCE_DIR}/../tests/run_tests.sh
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/..)
+set_tests_properties(smoke PROPERTIES
+  ENVIRONMENT "DOSEMU=$<TARGET_FILE:dosemu>")
