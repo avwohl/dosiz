@@ -163,6 +163,24 @@ jobs:
           echo "dosemu output: $out"
           echo "$out" | grep -q 'dpmi-integration=ok'
 
+      - name: AH=4Bh + AH=4Dh: 3-level nesting (grand -> middle -> child)
+        run: |
+          # GRAND spawns MIDDLE (which spawns CHILD).  Each parent
+          # verifies the child's exit code via AH=4Dh before exiting
+          # with its own distinctive code for its parent to check.
+          # Exercises s_process_stack beyond one frame.
+          workdir=$(mktemp -d)
+          cp tests/CHILD.COM tests/MIDDLE.COM tests/GRAND.COM "$workdir/"
+          cat > "$workdir/run.cfg" <<EOF
+          program = $workdir/GRAND.COM
+          drive_C = $workdir
+          EOF
+          out=$(build/dosemu "$workdir/run.cfg" 2>/dev/null)
+          echo "dosemu output: $out"
+          echo "$out" | grep -q 'child=ran'
+          echo "$out" | grep -q 'middle=ok'
+          echo "$out" | grep -q 'grand=ok'
+
       - name: AH=4Bh Load and Execute Program (spawn child, resume parent)
         run: |
           # Parent (SPAWN.COM) calls AH=4Bh AL=0 with DS:DX = "CHILD.COM"

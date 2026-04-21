@@ -271,6 +271,8 @@ Fixture inventory (CI covers all these)
                                  mcb_allocates 64KB for child, loader
                                  places child there, recursive
                                  RunMachine, nested-aware AH=4C.
+    GRAND.COM + MIDDLE.COM   -- 3-level AH=4B chain with AH=4D exit
+       + CHILD.COM              code round-trip at each level.
     HELLO_W.EXE              -- Open Watcom 16-bit hello (cross-compiled)
     HELLO_B.COM              -- bcc 0.16.21 hello (cross-compiled)
     EXE2BIN.EXE              -- real Open Watcom DOS-hosted utility

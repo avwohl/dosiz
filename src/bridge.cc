@@ -986,6 +986,12 @@ struct ProcessState {
 };
 std::vector<ProcessState> s_process_stack;
 
+// Last terminated child's exit info for AH=4Dh.  Low byte = exit
+// code from AH=4Ch, high byte = termination type (we always report
+// 0 = normal).  Updated by AH=4Bh after restoring the parent; read
+// (and effectively latched, spec allows consumption) by AH=4Dh.
+uint16_t s_last_child_exit = 0;
+
 // PM exception handler table for AX=0202/0203.  Each entry is a
 // selector:offset pair.  We never actually *dispatch* exceptions to
 // these handlers (dosbox aborts on most CPU exceptions rather than
@@ -2569,10 +2575,19 @@ Bitu dosemu_int21() {
 
       mcb_free(child_psp);
 
-      // Child's exit code goes in our handler's AL; caller can read
-      // it via INT 21h AH=4Dh (not implemented yet, but the exit
-      // status is recorded for the first probe).
+      // Expose the exit code via AH=4Dh and return it in AL for
+      // callers that prefer the simpler "read AL after 4B" idiom.
+      s_last_child_exit = restored.child_exit_code;
       reg_al = restored.child_exit_code;
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
+    case 0x4D: {  // Get Child Return Code
+      // Output: AL = exit code, AH = termination type (0=normal,
+      //         1=Ctrl-C, 2=critical error, 3=TSR).  We always report
+      //         0 for AH since our AH=4C path doesn't distinguish.
+      reg_ax = s_last_child_exit;
       set_cf(false);
       return CBRET_NONE;
     }
