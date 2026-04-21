@@ -3604,21 +3604,19 @@ bool le_apply_fixups(const std::vector<uint8_t> &f, size_t le_off,
           patch32(src_addr, rel);
           break;
         }
-        case 0x02:  // 16-bit selector stub
-          patch16(src_addr, 0);
-          std::fprintf(stderr, "dosemu: LE fixup: 16-bit selector stub "
-                       "at 0x%x -> obj%u (no LDT descriptor yet)\n",
-                       src_addr, tgt_obj);
+        case 0x02:  // 16-bit selector: the target object's LDT selector
+          patch16(src_addr, to.ldt_sel);
           break;
-        case 0x06:  // 16:32 pointer: 16-bit selector + 32-bit offset
-          patch32(src_addr, target_linear);
-          patch16(src_addr + 4, 0);
-          std::fprintf(stderr, "dosemu: LE fixup: 16:32 selector stub\n");
+        case 0x06:  // 16:32 far pointer: 32-bit offset + 16-bit selector.
+          // Layout on disk (little-endian): 4 bytes offset, then 2
+          // bytes selector.  Store offset (relative to target object)
+          // in the first dword, selector in the trailing word.
+          patch32(src_addr, tgt_off);
+          patch16(src_addr + 4, to.ldt_sel);
           break;
-        case 0x03:  // 16:16 pointer
-          patch16(src_addr, target_linear);
-          patch16(src_addr + 2, 0);
-          std::fprintf(stderr, "dosemu: LE fixup: 16:16 selector stub\n");
+        case 0x03:  // 16:16 far pointer: 16-bit offset + 16-bit selector.
+          patch16(src_addr, tgt_off);
+          patch16(src_addr + 2, to.ldt_sel);
           break;
         case 0x00:  // byte fixup
           patch8(src_addr, target_linear);
@@ -3744,11 +3742,14 @@ bool load_exe_at(const std::string &path, uint16_t psp_seg, InitialRegs &out) {
                      objects[i].is_code ? "CODE" : "DATA",
                      objects[i].is_big ? "32-bit" : "16-bit");
       }
-      le_apply_fixups(f, le_off, objects);
+      // Descriptors first: le_apply_fixups needs each object's
+      // ldt_sel populated for selector-bearing fixup types
+      // (0x02/0x03/0x06) to resolve.
       if (!le_install_descriptors(objects)) {
         std::fprintf(stderr, "dosemu: LE descriptor install failed\n");
         return false;
       }
+      le_apply_fixups(f, le_off, objects);
 
       // Extract entry/stack selectors from the populated LDT.
       const uint32_t entry_obj_1 = rdd(f, le_off + 0x18);
