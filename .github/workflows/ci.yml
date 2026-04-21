@@ -402,6 +402,14 @@ jobs:
           expected=$(printf '0x%08x' 0x$base2)
           echo "expected target linear: $expected"
           echo "$out" | grep -q "type 0x07 -> obj2+0x0 = $expected"
+          # LE_MIN's code is `mov eax, imm32; mov ah, 4Ch; int 21h`.
+          # After fixup + descriptor install + PM entry it should fall
+          # through to our PM INT 21h handler, set s_exit_code from AL,
+          # and exit cleanly (rc=0).  A regression anywhere in the
+          # load -> descriptor -> mode-switch -> IDT-gate pipeline
+          # dumps a dosbox E_Exit and non-zero rc.
+          build/dosemu tests/LE_MIN.EXE >/dev/null 2>&1
+          test $? -eq 0 && echo "LE_MIN ran to exit code 0"
 
       - name: Real compiler output (Open Watcom 16-bit hello)
         run: |

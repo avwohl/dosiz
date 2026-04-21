@@ -3679,6 +3679,26 @@ bool le_install_descriptors(std::vector<LeObject> &objects) {
   return true;
 }
 
+// LE launch prep: called after le_install_descriptors has populated
+// LDT slots for each object.  Seeds GDT/IDT/LDTR machinery in RM so
+// that dosemu_startup's is_pm branch can finish the mode switch with
+// just CR0.PE=1 + CPU_LLDT + segment loads + CPU_JMP.  We don't flip
+// CR0 here: subsequent code in load_exe_at and the return up to
+// dosemu_startup would run in PM with RM CS, which corrupts things.
+void le_launch_pm_prep() {
+  // Use 32-bit PM as the default for LE (most LE binaries are 32-bit
+  // BIG-flag objects, and the INT 21h/31h 32-bit IDT gates handle
+  // both 16- and 32-bit callers via the `66 CF` IRETD shim path).
+  const bool bits32 = true;
+  // GDT[1..4] are unused by LE clients (they use LDT selectors for
+  // everything) but pm_setup_gdt_and_idt writes valid descriptors
+  // covering the current RM segments anyway -- harmless.
+  pm_setup_gdt_and_idt(bits32, SegValue(cs), SegValue(ds),
+                       SegValue(ss), SegValue(es));
+  // Do NOT zero the LDT -- le_install_descriptors has already filled
+  // our slots and flipping those to zero would lose them.
+}
+
 // Load an MZ .EXE at the given PSP segment (image goes at psp_seg + 0x10).
 bool load_exe_at(const std::string &path, uint16_t psp_seg, InitialRegs &out) {
   const uint16_t load_seg = psp_seg + 0x10;
@@ -3706,35 +3726,70 @@ bool load_exe_at(const std::string &path, uint16_t psp_seg, InitialRegs &out) {
       load_le_inspect(path, f, le_off);
       std::vector<LeObject> objects;
       if (!s_mcb_initialised) mcb_init();
-      if (le_load_objects(f, le_off, objects)) {
-        std::fprintf(stderr, "dosemu: LE objects loaded to host segments:\n");
-        for (size_t i = 0; i < objects.size(); ++i) {
-          std::fprintf(stderr,
-                       "  obj %zu: host=0x%08x size=0x%x %s %s\n",
-                       i + 1, objects[i].host_base, objects[i].virt_size,
-                       objects[i].is_code ? "CODE" : "DATA",
-                       objects[i].is_big ? "32-bit" : "16-bit");
+      if (!le_load_objects(f, le_off, objects)) {
+        std::fprintf(stderr,
+            "dosemu: %s is LE/LX but le_load_objects failed\n",
+            path.c_str());
+        for (auto &o : objects) {
+          if (o.host_seg) mcb_free(o.host_seg);
+          else if (o.host_base) pm_free(o.host_base);
         }
-        le_apply_fixups(f, le_off, objects);
-        le_install_descriptors(objects);
+        return false;
       }
+      std::fprintf(stderr, "dosemu: LE objects loaded to host segments:\n");
+      for (size_t i = 0; i < objects.size(); ++i) {
+        std::fprintf(stderr,
+                     "  obj %zu: host=0x%08x size=0x%x %s %s\n",
+                     i + 1, objects[i].host_base, objects[i].virt_size,
+                     objects[i].is_code ? "CODE" : "DATA",
+                     objects[i].is_big ? "32-bit" : "16-bit");
+      }
+      le_apply_fixups(f, le_off, objects);
+      if (!le_install_descriptors(objects)) {
+        std::fprintf(stderr, "dosemu: LE descriptor install failed\n");
+        return false;
+      }
+
+      // Extract entry/stack selectors from the populated LDT.
+      const uint32_t entry_obj_1 = rdd(f, le_off + 0x18);
+      const uint32_t entry_eip   = rdd(f, le_off + 0x1C);
+      const uint32_t stack_obj_1 = rdd(f, le_off + 0x20);
+      const uint32_t stack_esp   = rdd(f, le_off + 0x24);
+      const uint32_t auto_obj_1  = rdd(f, le_off + 0x94);
+      if (entry_obj_1 == 0 || entry_obj_1 > objects.size()
+          || stack_obj_1 == 0 || stack_obj_1 > objects.size()) {
+        std::fprintf(stderr, "dosemu: LE entry_obj=%u stack_obj=%u out of range\n",
+                     entry_obj_1, stack_obj_1);
+        return false;
+      }
+      const LeObject &eo = objects[entry_obj_1 - 1];
+      const LeObject &so = objects[stack_obj_1 - 1];
+      const uint16_t ds_sel = (auto_obj_1 && auto_obj_1 <= objects.size())
+          ? objects[auto_obj_1 - 1].ldt_sel : so.ldt_sel;
+
       std::fprintf(stderr,
-          "dosemu: %s is LE/LX -- pages copied + fixups applied into "
-          "host memory (MCB for small objects, pm_arena above 1MB for "
-          "large), but executing still requires PM-entry descriptor "
-          "setup (follow-up work).\n",
-          path.c_str());
-      // Free objects we allocated -- caller doesn't know to.
-      for (auto &o : objects) {
-        if (o.ldt_sel) {
-          const uint16_t idx = (o.ldt_sel >> 3);
-          write_ldt_descriptor(idx, 0, 0, 0);
-          ldt_set(idx, false);
-        }
-        if (o.host_seg) mcb_free(o.host_seg);
-        else if (o.host_base) pm_free(o.host_base);
-      }
-      return false;
+          "dosemu: LE entry CS=%04x:EIP=%08x SS=%04x:ESP=%08x DS=%04x\n",
+          eo.ldt_sel, entry_eip, so.ldt_sel, stack_esp, ds_sel);
+
+      // Stage GDT/IDT so dosemu_startup just has to flip CR0 and jump.
+      le_launch_pm_prep();
+
+      out.is_pm    = true;
+      out.is_32bit = eo.is_big;
+      out.cs       = eo.ldt_sel;
+      out.ss       = so.ldt_sel;
+      out.pm_ds    = ds_sel;
+      out.pm_eip   = entry_eip;
+      out.pm_esp   = stack_esp;
+      // Fill the RM-side fields with something sane; they're not
+      // consumed on the is_pm path but gcc will warn about unused-init.
+      out.ip = 0;
+      out.sp = 0;
+      out.ax = 0;
+      // Objects' descriptor slots + host memory stay live for the
+      // duration of the LE program.  They will leak when the program
+      // exits (acceptable for now -- process exit reclaims everything).
+      return true;
     }
   }
 
@@ -3998,6 +4053,30 @@ void dosemu_startup() {
   if (!load_program(s_program, ir)) {
     s_exit_code = 1;
     shutdown_requested = true;
+    return;
+  }
+
+  if (ir.is_pm) {
+    // LE entry path.  load_exe_at has already:
+    //   - allocated per-object host memory + applied fixups
+    //   - installed one LDT descriptor per object
+    //   - run pm_setup_gdt_and_idt to populate GDT/IDT in memory and
+    //     issue CPU_LGDT/CPU_LIDT (still in RM)
+    // We finish the switch here: flip CR0.PE, activate the LDT, load
+    // the data/stack selectors, then CPU_JMP into the LE entry.
+    CPU_SET_CRX(0, 0x00000001);   // PE=1
+    CPU_LLDT(PM_LDT_SEL);
+    CPU_SetSegGeneral(ds, ir.pm_ds);
+    CPU_SetSegGeneral(es, ir.pm_ds);
+    CPU_SetSegGeneral(ss, ir.ss);
+    reg_esp = ir.pm_esp;
+    std::fprintf(stderr,
+        "dosemu: LE entering PM: CS=%04x:EIP=%08x SS=%04x:ESP=%08x "
+        "DS=%04x ES=%04x D=%u\n",
+        ir.cs, ir.pm_eip, ir.ss, ir.pm_esp, ir.pm_ds, ir.pm_ds,
+        ir.is_32bit ? 1 : 0);
+    CPU_JMP(ir.is_32bit, ir.cs, ir.pm_eip, 0);
+    DOSBOX_RunMachine();
     return;
   }
 

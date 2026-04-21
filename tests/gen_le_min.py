@@ -135,19 +135,25 @@ page_map = bytes([0x00, 0x00, 0x01, 0x00])
 
 # ---- The 4K data page ------------------------------------------------------
 page = bytearray(PAGE_SIZE)
-# Obj 1 code at page offset 0:
-#   B8 XX XX XX XX       mov eax, imm32   (imm32 patched by type-7 fixup)
-#   CD 20                int 20h           (DOS program terminate)
-#   90                   nop
+# Obj 1 code at page offset 0 (32-bit; entry_eip = 0):
+#   B8 XX XX XX XX       mov eax, imm32   (imm32 patched by type-7 fixup
+#                                          to point at obj 2 + 0)
+#   B4 4C                mov ah, 4Ch      (AH=4Ch = DOS terminate-with-code)
+#   CD 21                int 21h           (PM INT 21h handler runs, AL=0
+#                                          so exit code 0)
+#   90 90                nop nop
 page[0] = 0xB8
 page[1:5] = b"\xDE\xAD\xBE\xEF"   # placeholder imm32; fixup should overwrite
-page[5] = 0xCD
-page[6] = 0x20
-page[7] = 0x90
-# Obj 2 data overlaps at page offset 8..15 in the same physical page --
-# fine, since both objects refer to page 1.  But their virt_bases differ
-# (0x10000 vs 0x20000), so fixup targets resolve based on host_seg.
-page[8:16] = b"LE-DATA\x00"
+page[5:7] = b"\xB4\x4C"
+page[7] = 0xCD
+page[8] = 0x21
+page[9:11] = b"\x90\x90"
+# Obj 2 data overlaps starting at page offset 11 in the same physical
+# page -- fine, since both objects refer to page 1.  Their virt_bases
+# differ (0x10000 vs 0x20000), so fixup targets resolve based on
+# host_base.  We keep DATA_PAGE_BYTES at 16 so the copy-out writes
+# past any meaningful code.
+page[11:16] = b"LE-DT"
 # Truncate per last_page_sz = 16 bytes on the wire (the loader clips the
 # copy to 16 bytes; we emit only 16 bytes on disk for this page).
 DATA_PAGE_BYTES = 16
