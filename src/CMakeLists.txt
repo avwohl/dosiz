@@ -9,7 +9,7 @@
 # it just defines the target and project-level options so `cmake -S src -B build`
 # does not fail on a fresh clone.
 #
-cmake_minimum_required(VERSION 3.24)
+cmake_minimum_required(VERSION 3.25)
 project(dosemu CXX C)
 
 set(CMAKE_CXX_STANDARD 20)

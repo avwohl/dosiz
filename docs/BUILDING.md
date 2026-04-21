@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - C++20 compiler (GCC 12+ or Clang 15+)
-- CMake 3.24+
+- CMake 3.25+ (dosbox-staging requirement)
 - git (with submodule support)
 - SDL2 development headers (`libsdl2-dev` on Debian/Ubuntu)
 - dosbox-staging build dependencies: libpng-dev, zlib1g-dev, libopusfile-dev,
