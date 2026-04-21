@@ -622,7 +622,7 @@ uint16_t s_int21_cb_seg = 0;
 uint16_t s_int21_cb_off = 0;
 
 void write_gdt_descriptor(int idx, uint32_t base, uint32_t limit,
-                          uint8_t access) {
+                          uint8_t access, bool bits32 = false) {
   const PhysPt p = GDT_SEG * 16u + idx * 8u;
   mem_writeb(p + 0, limit & 0xFF);
   mem_writeb(p + 1, (limit >> 8) & 0xFF);
@@ -630,23 +630,25 @@ void write_gdt_descriptor(int idx, uint32_t base, uint32_t limit,
   mem_writeb(p + 3, (base >> 8) & 0xFF);
   mem_writeb(p + 4, (base >> 16) & 0xFF);
   mem_writeb(p + 5, access);
-  mem_writeb(p + 6, ((limit >> 16) & 0x0F));   // flags high nibble = 0: 16-bit, byte-granular
+  // Byte 6 high nibble: G=0 (byte granular), D=1 for 32-bit segments.
+  const uint8_t flags = bits32 ? 0x40 : 0x00;
+  mem_writeb(p + 6, ((limit >> 16) & 0x0F) | flags);
   mem_writeb(p + 7, (base >> 24) & 0xFF);
 }
 
-// Write a 16-bit interrupt gate to IDT[idx].  Target selector:offset is
-// where control transfers when INT idx fires in PM.  Type = 0x86: P=1,
-// DPL=0, 16-bit interrupt gate (IRET popping 16-bit IP+CS+FLAGS).
-void write_idt_gate_16(int idx, uint16_t sel, uint16_t off) {
+// Write an interrupt gate to IDT[idx].  Target selector:offset is where
+// control transfers when INT idx fires in PM.  Type byte 0x86 = 16-bit
+// interrupt gate, 0x8E = 32-bit interrupt gate.
+void write_idt_gate(int idx, uint16_t sel, uint32_t off, bool bits32) {
   const PhysPt p = IDT_SEG * 16u + idx * 8u;
   mem_writeb(p + 0, off & 0xFF);
   mem_writeb(p + 1, (off >> 8) & 0xFF);
   mem_writeb(p + 2, sel & 0xFF);
   mem_writeb(p + 3, (sel >> 8) & 0xFF);
   mem_writeb(p + 4, 0);
-  mem_writeb(p + 5, 0x86);                      // present, DPL=0, 16-bit int gate
-  mem_writeb(p + 6, 0);
-  mem_writeb(p + 7, 0);
+  mem_writeb(p + 5, bits32 ? 0x8E : 0x86);      // present, DPL=0, int gate
+  mem_writeb(p + 6, (off >> 16) & 0xFF);        // 32-bit offset high
+  mem_writeb(p + 7, (off >> 24) & 0xFF);
 }
 
 Bitu dosemu_dpmi_entry() {
@@ -668,25 +670,29 @@ Bitu dosemu_dpmi_entry() {
   // Build GDT: code, data, stack, es segments all cover the corresponding
   // 64K real-mode arena.  Access byte 0x9A = present, DPL=0, code,
   // readable; 0x92 = present, DPL=0, data, writable.
-  write_gdt_descriptor(0, 0,              0,      0);               // null
-  write_gdt_descriptor(1, client_cs * 16, 0xFFFF, 0x9A);            // code
-  write_gdt_descriptor(2, SegValue(ds) * 16, 0xFFFF, 0x92);         // data
-  write_gdt_descriptor(3, SegValue(ss) * 16, 0xFFFF, 0x92);         // stack
-  write_gdt_descriptor(4, SegValue(es) * 16, 0xFFFF, 0x92);         // es
-  // Selector 0x28: 16-bit code segment covering dosbox's callback area
-  // (CB_SEG=0xF000 -> base 0xF0000).  IDT gates target this selector so
-  // INT N from PM reaches our C++ handlers via dosbox's callback machinery.
-  write_gdt_descriptor(5, 0xF0000, 0xFFFF, 0x9A);
+  // AX on entry: 0 = 16-bit PM, 1 = 32-bit PM.  Everything else about the
+  // switch is identical except for the D flag on the code descriptor and
+  // the IDT gate type.
+  const bool bits32 = (reg_ax == 1);
+
+  write_gdt_descriptor(0, 0,              0,      0);                 // null
+  write_gdt_descriptor(1, client_cs * 16, 0xFFFF, 0x9A, bits32);      // code
+  write_gdt_descriptor(2, SegValue(ds) * 16, 0xFFFF, 0x92);           // data
+  write_gdt_descriptor(3, SegValue(ss) * 16, 0xFFFF, 0x92);           // stack
+  write_gdt_descriptor(4, SegValue(es) * 16, 0xFFFF, 0x92);           // es
+  // Selector 0x28: code segment covering dosbox's callback area
+  // (CB_SEG=0xF000 -> base 0xF0000).  Always 16-bit: dosbox's callback
+  // stub emits 16-bit instructions (FB/CF/CB), so a 32-bit client's
+  // INT 21h hits a 16-bit compatibility sub-segment.
+  write_gdt_descriptor(5, 0xF0000, 0xFFFF, 0x9A);                    // cb
 
   CPU_LGDT(GDT_LIMIT, GDT_SEG * 16u);
 
-  // Build an IDT large enough for all 256 vectors.  Most entries are
-  // uninstalled (limit check will fault) since this program shouldn't
-  // trigger them -- we CLI'd before the switch.  Only INT 21h is wired
-  // to our real-mode callback via a 16-bit interrupt gate.
-  for (int i = 0; i < 256; ++i) write_idt_gate_16(i, 0, 0);   // zero
+  // Build IDT: zero all 256 entries, install INT 21h at the requested
+  // bitness.  CLI'd by the fixture/client -- other vectors would fault.
+  for (int i = 0; i < 256; ++i) write_idt_gate(i, 0, 0, bits32);
   if (s_int21_cb_seg || s_int21_cb_off)
-    write_idt_gate_16(0x21, PM_CB_SEL, s_int21_cb_off);
+    write_idt_gate(0x21, PM_CB_SEL, s_int21_cb_off, bits32);
   CPU_LIDT(IDT_LIMIT, IDT_SEG * 16u);
 
   // Replace the stacked return-address CS with our PM code selector so the
