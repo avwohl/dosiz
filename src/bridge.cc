@@ -811,6 +811,7 @@ uint16_t s_int21_cb32_off  = 0;
 // stage-1 `Set_RealVec(0x31)` covers only the real-mode IVT.
 uint16_t s_int31_cb_off    = 0;
 uint16_t s_int31_cb32_off  = 0;
+uint16_t s_le_exc_cb32_off = 0;
 
 void write_gdt_descriptor(int idx, uint32_t base, uint32_t limit,
                           uint8_t access, bool bits32 = false) {
@@ -1051,6 +1052,40 @@ Bitu dosemu_int16() {
 // native dispatch below returns CBRET_STOP which unwinds the nested
 // DOSBOX_RunMachine, handing control back to the AX=0302 handler.
 Bitu dosemu_rm_stop() { return CBRET_STOP; }
+
+// LE exception handler.  Installed as the PM IDT gate target for
+// vectors 0x00..0x1F when launching an LE binary.  We can't recover
+// from a client-side PM fault (no virtual-memory fault-in, no
+// client-provided handler like DPMI AX=0203), so we log the stacked
+// fault frame and terminate cleanly instead of letting dosbox abort
+// at the "Gate Selector points to illegal descriptor" cascade.
+//
+// Same callback is wired to all 32 vectors, so we don't know which
+// one we're handling.  The frame layout differs: #GP/#TS/#NP/#SS/
+// #PF/#AC push a 4-byte error code BEFORE EIP.  We dump the top 5
+// dwords so whichever interpretation is right, the user sees
+// enough.  CS and EFLAGS are recognizable (CS is a valid LDT
+// selector; EFLAGS has reserved bit 1 = 1) which lets a reader
+// disambiguate.
+Bitu dosemu_le_exception() {
+  const PhysPt sp = SegPhys(ss) + reg_esp;
+  const uint32_t w0 = mem_readd(sp + 0);
+  const uint32_t w1 = mem_readd(sp + 4);
+  const uint32_t w2 = mem_readd(sp + 8);
+  const uint32_t w3 = mem_readd(sp + 12);
+  const uint32_t w4 = mem_readd(sp + 16);
+  std::fprintf(stderr,
+      "dosemu: LE client took a PM exception -- terminating.\n"
+      "  SS:ESP = %04x:%08x\n"
+      "  stack[0..4] = %08x %08x %08x %08x %08x\n"
+      "  (no-error-code frame is [EIP CS EFLAGS]; error-code frame\n"
+      "   is [ERR EIP CS EFLAGS] -- CS is the first word matching a\n"
+      "   valid LDT selector, EFLAGS has bit 1 = 1.)\n",
+      SegValue(ss), reg_esp, w0, w1, w2, w3, w4);
+  s_exit_code   = 1;
+  shutdown_requested = true;
+  return CBRET_STOP;
+}
 RealPt s_rm_stop_ptr = 0;
 
 // No-op callback handed back by AX=0305/0306 as state-save and raw-
@@ -3695,6 +3730,20 @@ void le_launch_pm_prep() {
                        SegValue(ss), SegValue(es));
   // Do NOT zero the LDT -- le_install_descriptors has already filled
   // our slots and flipping those to zero would lose them.
+
+  // Install a catch-all PM exception handler for vectors 0x00..0x1F.
+  // Without these, a client #GP (or any other early fault) sends the
+  // CPU to an uninstalled IDT gate and dosbox aborts with "Gate
+  // Selector points to illegal descriptor".  Our handler logs the
+  // fault CS:EIP and terminates cleanly with rc=1 so the user gets
+  // actionable output.
+  if (s_le_exc_cb32_off) {
+    for (int v = 0; v < 0x20; ++v) {
+      // INT 0x3 is the breakpoint instruction -- harmless but the
+      // debugger relies on it, so still route through our handler.
+      write_idt_gate(v, PM_CB_SEL, s_le_exc_cb32_off, true);
+    }
+  }
 }
 
 // Load an MZ .EXE at the given PSP segment (image goes at psp_seg + 0x10).
@@ -4027,6 +4076,17 @@ void dosemu_startup() {
   {
     const RealPt rp = int31_cb32.Get_RealPointer();
     s_int31_cb32_off = static_cast<uint16_t>(rp & 0xFFFF);
+  }
+
+  // LE exception handler, shared by IDT vectors 0x00..0x1F on the
+  // LE launch path.  CB_IRETD matches the 32-bit PM gate's 12-byte
+  // frame -- LE entry is always 32-bit-ready (see le_launch_pm_prep).
+  CALLBACK_HandlerObject le_exc_cb;
+  le_exc_cb.Install(&dosemu_le_exception, CB_IRETD,
+                    "dosemu LE exception (vectors 0x00..0x1F)");
+  {
+    const RealPt rp = le_exc_cb.Get_RealPointer();
+    s_le_exc_cb32_off = static_cast<uint16_t>(rp & 0xFFFF);
   }
 
   // INT 2Fh handler for DPMI detection (stage 2).  Reports DPMI present
