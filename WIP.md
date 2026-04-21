@@ -249,10 +249,20 @@ Ordered roughly by leverage / difficulty:
    writing 0. Should unblock any real LE binary that uses far
    function pointers or vtables.
 2. **Make wd.exe survive its first interrupt.** Currently aborts
-   with `INT:Gate Selector points to illegal descriptor` ~0.3s in.
-   Step through via stderr to identify the vector it's hitting;
-   decide whether to install a RM handler for it or gate the vector
-   in the PM IDT.
+   with `INT:Gate Selector points to illegal descriptor` ~0.3s
+   into PM execution.  Instrumented dosbox to print the vector:
+   `INT vector 0xd gate_sel=0x0` -- wd.exe GP-faults (#GP =
+   vector 0x0D) very early in entry, and our PM IDT has gate 0x0D
+   uninstalled, so the CPU can't even dispatch the exception.
+   Two pieces needed:
+     (a) Install PM IDT gates for exception vectors 0x00..0x1F that
+         point at a handler which logs + exits cleanly.
+     (b) Figure out what's GP-faulting.  Likely candidates: our
+         entry doesn't set FS/GS at all (they hold RM values which
+         are invalid PM selectors), doesn't provide a TSS, doesn't
+         set up a PSP or env block pointer in the usual Watcom
+         calling convention.  DOS4G/W's own RM stub does all of
+         this before entering PM; our LE entry is too naive.
 3. **Cross-build a DJGPP tiny hello** (separate toolchain). Might
    give us a COFF-in-MZ path that's easier than LE for some
    targets.
@@ -327,6 +337,8 @@ External-tool integration:
 ## Commits since the original handoff (1222c44)
 
 ```
+d21def3  LE loader: wire selector-bearing fixups + fix LE_MIN exit code
+62cd044  WIP.md: LE loader end-to-end, first PM execution landed
 48bc558  LE loader: end-to-end execution -- LE_MIN runs to exit
 2db8310  DPMI: extract pm_setup_gdt_and_idt helper
 06b7f4d  WIP.md: LE LDT descriptor install landed
@@ -365,5 +377,5 @@ ffcdbff  DPMI stage 4 (subset): INT 31h AX=0400 + get/set segment base
 bfe1c76  DPMI stage 5 (32-bit): end-to-end fixture + IRETD callback stub
 ```
 
-35 commits from the session's start (`1222c44` "WIP.txt: handoff notes").
+37 commits from the session's start (`1222c44` "WIP.txt: handoff notes").
 All on main, all pushed.
