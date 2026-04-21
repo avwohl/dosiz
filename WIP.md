@@ -248,20 +248,21 @@ Ordered roughly by leverage / difficulty:
    `objects[tgt_obj-1].ldt_sel` into the selector field instead of
    writing 0. Should unblock any real LE binary that uses far
    function pointers or vtables.
-2. **Make wd.exe survive its first fault.** Exception handlers
-   now installed, gate bitness matches entry BIG flag, AND the
-   BIG-bit misread was fixed (4e4def8: 0x2000 not 0x4000).
-   wd.exe now enters 32-bit PM correctly and executes code far
-   enough to hit a different failure: `IRET:Outer level:Stack
-   segment not writable` at ~0.23s in.  That's a CPL-transition
-   bug -- wd.exe did some push/call that stacked an SS, and the
-   matching IRET reads a value that doesn't satisfy the outer-
-   level writable-data-segment check.  Likely we never set up a
-   TSS so when an INT gate wants to stack SS:ESP, it either reads
-   garbage or dosbox synthesizes zeros.  Next step is probably
-   installing a minimal TSS (just SS0:ESP0 pointed at our PM
-   scratch stack) so inner-to-outer transitions have real values
-   to pop.
+2. **Make wd.exe survive its first fault.** Progress ladder:
+   - Exception handlers installed (2087074).
+   - Gate bitness matches entry BIG (63f0ef3).
+   - BIG-bit misread fixed (4e4def8): was 0x4000, spec is 0x2000.
+   wd.exe now enters 32-bit PM correctly and executes code.  Next
+   failure: `IRET:Outer level:Stack segment not writable` at
+   ~0.23s in.  dosbox instrumentation showed the IRET read
+   `n_ss=0x69e8  n_esp=0xcf026de8  n_cs_rpl=1` -- all values are
+   uninitialized-memory garbage, which means wd.exe ran an IRET
+   whose stack frame was never properly set up.  Most likely
+   path: wd.exe hit an INT 21h, our PM INT 21h handler (which
+   runs in 16-bit CB_SEL through the `66 CF` IRETD shim) pushed a
+   bad frame, and when wd.exe's IRETD unwinds it, the stack is
+   garbage.  Need to trace what INT fired and verify the handler
+   preserves stack correctly across the 16-bit shim boundary.
 3. **Cross-build a DJGPP tiny hello** (separate toolchain). Might
    give us a COFF-in-MZ path that's easier than LE for some
    targets.
@@ -336,6 +337,7 @@ External-tool integration:
 ## Commits since the original handoff (1222c44)
 
 ```
+d65a0c2  WIP.md: LE BIG bit fix + wd.exe next failure identified
 4e4def8  LE loader: BIG bit is 0x2000, not 0x4000
 6a8933a  WIP.md: bitness-matched exception gates landed
 63f0ef3  LE: match exception-gate bitness to entry object's BIG flag
@@ -382,5 +384,5 @@ ffcdbff  DPMI stage 4 (subset): INT 31h AX=0400 + get/set segment base
 bfe1c76  DPMI stage 5 (32-bit): end-to-end fixture + IRETD callback stub
 ```
 
-41 commits from the session's start (`1222c44` "WIP.txt: handoff notes").
+42 commits from the session's start (`1222c44` "WIP.txt: handoff notes").
 All on main, all pushed.
