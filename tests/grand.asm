@@ -8,6 +8,17 @@
 
     org 100h
 
+    ; Shrink our own PSP block to 4KB via AH=4A so AH=4B below has
+    ; memory available to allocate MIDDLE's block (DOS gives us the
+    ; whole free arena at startup; we need to release most of it).
+    mov ah, 4Ah
+    mov bx, 100h
+    push es
+    mov ax, cs
+    mov es, ax
+    int 21h
+    pop es
+
     mov ax, cs
     mov word [pblock + 0], 0
     mov word [pblock + 2], cmdtail

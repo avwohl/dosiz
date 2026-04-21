@@ -16,6 +16,17 @@
 
     org 100h
 
+    ; Shrink our own PSP block to 4KB via AH=4A so AH=4B below has
+    ; memory available (DOS gives us the whole free arena; we need
+    ; to release most of it).
+    mov ah, 4Ah
+    mov bx, 100h
+    push es
+    mov ax, cs
+    mov es, ax
+    int 21h
+    pop es
+
     ; Parameter block at `pblock` below.  env_seg=0 means "inherit
     ; parent's".  Command tail is a 4-byte far pointer to cmdtail
     ; which must start with a length byte followed by the tail, then

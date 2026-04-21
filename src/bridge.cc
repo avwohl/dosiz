@@ -3236,13 +3236,10 @@ Bitu dosemu_int21() {
       uint16_t largest = 0;
       const uint16_t seg = mcb_allocate(reg_bx, largest);
       if (seg == 0) {
-        reg_ax = 0x08;                   // insufficient memory
-        reg_bx = largest;                // largest block available
-        set_cf(true);
+        reg_ax = 0x08; reg_bx = largest; set_cf(true);
         return CBRET_NONE;
       }
-      reg_ax = seg;
-      set_cf(false);
+      reg_ax = seg; set_cf(false);
       return CBRET_NONE;
     }
 
@@ -3266,9 +3263,7 @@ Bitu dosemu_int21() {
       uint16_t largest = 0;
       const uint16_t got = mcb_resize(SegValue(es), reg_bx, largest);
       if (got == reg_bx) { set_cf(false); return CBRET_NONE; }
-      reg_ax = 0x08;
-      reg_bx = largest;
-      set_cf(true);
+      reg_ax = 0x08; reg_bx = largest; set_cf(true);
       return CBRET_NONE;
     }
 
@@ -3326,13 +3321,35 @@ Bitu dosemu_int21() {
 
       // Reserve 64KB for the child (0x1000 paragraphs), leaving room
       // for PSP (0x10 paras), code, data, and stack.  Real DOS hands
-      // the child all free memory; 64KB is plenty for anything our
-      // test fixtures spawn.
+      // the child the largest free block (standard DOS behaviour --
+      // a real "exec" hands the spawned program all remaining
+      // conventional memory; the child then resizes down via AH=4A
+      // to whatever it actually needs).  The old 64KB hardcode was
+      // fine for our own tiny child fixtures but cripples real
+      // DOS extenders like DOS/4GW that grow their allocation
+      // during init.
       if (!s_mcb_initialised) mcb_init();
       uint16_t largest = 0;
-      const uint16_t child_psp = mcb_allocate(0x1000, largest);
+      // Give the child enough conventional memory for the most
+      // demanding single-program case we've seen (DOS/4GW's runtime
+      // grows its initial block to 0x1236 paragraphs during init),
+      // with a cap so nested AH=4B spawns still have room.  DOS
+      // traditionally hands the child ALL remaining memory, but then
+      // expects the child to AH=4A-shrink itself before spawning
+      // grandchildren; the cap here lets less-well-behaved fixtures
+      // nest without requiring an explicit shrink.
+      //
+      // 0x4000 paragraphs = 256KB -- fits DOS/4GW with headroom and
+      // leaves ~384KB of the arena free for grandchildren.
+      constexpr uint16_t CHILD_MAX_PARAS = 0x4000;
+      const uint16_t env_reserve = (ENV_BYTES + 15u) / 16u;
+      mcb_find_free(0xFFFF, largest);
+      if (largest <= env_reserve + 0x20) { return_error(8); break; }
+      uint16_t want = largest - (env_reserve + 0x20);
+      if (want > CHILD_MAX_PARAS) want = CHILD_MAX_PARAS;
+      const uint16_t child_psp = mcb_allocate(want, largest);
       if (child_psp == 0) {
-        return_error(8);   // insufficient memory
+        return_error(8);
         break;
       }
 

@@ -8,6 +8,18 @@
 
     org 100h
 
+    ; Shrink our own PSP block to 4KB via AH=4A.  DOS gives the
+    ; spawned child all free conventional memory, so without this
+    ; shrink our AH=4B below has nothing left to allocate for CHILD.
+    ; Standard DOS programming idiom.
+    mov ah, 4Ah
+    mov bx, 100h              ; 256 paragraphs = 4KB
+    push es
+    mov ax, cs
+    mov es, ax
+    int 21h
+    pop es
+
     mov ax, cs
     mov word [pblock + 0], 0
     mov word [pblock + 2], cmdtail
