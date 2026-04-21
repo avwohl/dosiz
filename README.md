@@ -7,12 +7,11 @@ implementations running on the host. Same design as
 [cpmemu](https://github.com/avwohl/cpmemu), which does the equivalent for
 CP/M BDOS.
 
-**Status:** basic .COM and .EXE programs run.
+**Status:** real DOS programs run.
 
-	dosemu tests/HELLO.COM           → prints dosemu-hello-ok
-	dosemu tests/HELLO.EXE           → prints dosemu-hello-exe-ok
-	dosemu tests/SYSCALLS.COM        → dosver=6.22 / alloc=0x2000 / int21-set-ok
-	dosemu tests/WRITE.COM ci-tail   → creates WROTE.TXT in CWD
+	dosemu tests/HELLO.COM                → prints dosemu-hello-ok
+	dosemu tests/HELLO.EXE                → prints dosemu-hello-exe-ok
+	echo F | dosemu xcopy.exe src dst     → copies src to dst (real FreeDOS xcopy!)
 
 dosbox-staging is linked in-process for CPU + PC hardware. DOS INT 21h is
 handled entirely by C++ host code. Currently implemented:

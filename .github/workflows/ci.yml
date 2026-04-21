@@ -78,6 +78,25 @@ jobs:
           echo "dosemu output: $out"
           echo "$out" | grep -q 'int31=denied'
 
+      - name: Real tool (FreeDOS xcopy.exe copies a file)
+        run: |
+          xcopy=dosbox-staging/build/resources/drives/y/dos/xcopy.exe
+          if [ ! -f "$xcopy" ]; then
+            echo "SKIP: xcopy.exe missing from dosbox-staging build tree"
+            exit 0
+          fi
+          workdir=$(mktemp -d)
+          cp "$xcopy" "$workdir/"
+          printf 'hello from xcopy test\n' > "$workdir/src.txt"
+          cat > "$workdir/r.cfg" <<EOF
+          program = $workdir/xcopy.exe
+          args = src.txt dst.txt
+          drive_C = $workdir
+          EOF
+          # xcopy prompts when the dest doesn't exist; 'F' = "it's a file".
+          echo 'F' | build/dosemu "$workdir/r.cfg" 2>/dev/null
+          diff "$workdir/src.txt" "$workdir/dst.txt"
+
       - name: Smoke (.cfg drives + default_mode=text)
         run: |
           workdir=$(mktemp -d)

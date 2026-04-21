@@ -286,8 +286,17 @@ std::string read_dos_string(uint16_t seg, uint16_t off, size_t max = 260) {
   return s;
 }
 
-// Translate a DOS path (drive-letter + backslashes) to a host path.
-// For this iteration, all drives resolve under a single base directory.
+std::string upper(const std::string &s) {
+  std::string u = s;
+  for (auto &c : u) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+  return u;
+}
+
+// Translate a DOS path (drive-letter + backslashes) to a host path.  DOS
+// is case-insensitive; Linux isn't.  If the exact-case file doesn't
+// exist, scan the parent directory for a case-insensitive match on the
+// final segment -- resolves "C:\SRC.TXT" -> "/mnt/src.txt" when a real
+// program (xcopy, compilers, etc.) uppercases filenames before open.
 std::string dos_to_host(const std::string &dos_path) {
   std::string path = dos_path;
   char drive = s_current_drive;
@@ -296,23 +305,38 @@ std::string dos_to_host(const std::string &dos_path) {
     drive = static_cast<char>(std::toupper(static_cast<unsigned char>(path[0])));
     path  = path.substr(2);
   }
-
   std::replace(path.begin(), path.end(), '\\', '/');
 
   auto it = s_drives.find(drive);
-  if (it == s_drives.end()) {
-    // Unknown drive -> treat path as relative to CWD.
-    return path;
-  }
-  if (path.empty()) return it->second;
-  if (path.front() == '/') return it->second + path;
-  return it->second + "/" + path;
-}
+  const std::string base = (it == s_drives.end()) ? "" : it->second;
 
-std::string upper(const std::string &s) {
-  std::string u = s;
-  for (auto &c : u) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-  return u;
+  std::string literal;
+  if (path.empty())           literal = base;
+  else if (path.front() == '/') literal = base + path;
+  else if (base.empty())      literal = path;
+  else                        literal = base + "/" + path;
+
+  // If the exact path resolves, use it.
+  struct stat st;
+  if (::stat(literal.c_str(), &st) == 0) return literal;
+
+  // Fall back to a case-insensitive scan of the parent directory on the
+  // last segment only.  Intermediate dirs must exist exact-case today;
+  // extending to every segment is straightforward if a real tool needs it.
+  const size_t slash = literal.find_last_of('/');
+  const std::string parent = (slash == std::string::npos) ? "."
+                                                          : literal.substr(0, slash);
+  const std::string target_u = upper(
+      (slash == std::string::npos) ? literal : literal.substr(slash + 1));
+  DIR *d = ::opendir(parent.c_str());
+  if (!d) return literal;
+  std::string found;
+  while (struct dirent *ent = ::readdir(d)) {
+    if (upper(ent->d_name) == target_u) { found = ent->d_name; break; }
+  }
+  ::closedir(d);
+  if (!found.empty()) return parent + "/" + found;
+  return literal;        // caller will get ENOENT from the open() call
 }
 
 // Simple case-insensitive glob with * and ? — enough for DOS patterns.
@@ -559,6 +583,10 @@ Bitu dosemu_int31() {
 }
 
 Bitu dosemu_int21() {
+  if (std::getenv("DOSEMU_TRACE")) {
+    std::fprintf(stderr, "[trace] AH=%02x AL=%02x BX=%04x CX=%04x DX=%04x\n",
+                 reg_ah, reg_al, reg_bx, reg_cx, reg_dx);
+  }
   switch (reg_ah) {
 
     case 0x01: {  // Read char from stdin, echo to stdout, return in AL.
@@ -835,6 +863,22 @@ Bitu dosemu_int21() {
       return CBRET_NONE;
     }
 
+    case 0x36: {  // Get disk free space: DL=drive (0=default, 1=A...)
+                  // Returns: AX=sec/cluster, BX=free clusters, CX=bytes/sec,
+                  // DX=total clusters.  Report a generous ~500MB.
+      const char drive = (reg_dl == 0) ? s_current_drive
+                                       : static_cast<char>('A' + reg_dl - 1);
+      if (s_drives.find(drive) == s_drives.end()) {
+        reg_ax = 0xFFFF;                // invalid drive
+        return CBRET_NONE;
+      }
+      reg_ax = 32;      // sectors per cluster
+      reg_bx = 32768;   // available clusters
+      reg_cx = 512;     // bytes per sector
+      reg_dx = 32768;   // total clusters  -> 32*32768*512 = 512 MiB
+      return CBRET_NONE;
+    }
+
     case 0x37: {  // Get/set switchar (the / vs - convention).  Keep it
                   // as '/' so DOS programs parse their own CLI sensibly.
       static uint8_t switchar = '/';
@@ -1073,6 +1117,16 @@ Bitu dosemu_int21() {
     }
 
     case 0x4A: {  // Resize ES block to BX paragraphs
+      // Real DOS programs start by shrinking their "own" block (the one
+      // DOS implicitly allocated for the loaded .EXE/.COM) to free memory
+      // for the heap.  That block isn't in our MCB chain -- the chain
+      // only covers the arena above the program image.  For blocks our
+      // chain doesn't know about, accept the resize as a no-op success
+      // so programs can proceed to AH=48h.
+      if (SegValue(es) < MCB_ARENA_START) {
+        set_cf(false);
+        return CBRET_NONE;
+      }
       uint16_t largest = 0;
       const uint16_t got = mcb_resize(SegValue(es), reg_bx, largest);
       if (got == reg_bx) { set_cf(false); return CBRET_NONE; }
@@ -1331,6 +1385,12 @@ void build_psp(const std::string &program_path,
   // INT 20h at offset 0x00 (CD 20).
   mem_writeb(psp + 0x00, 0xCD);
   mem_writeb(psp + 0x01, 0x20);
+
+  // Top-of-memory segment at offset 02h.  DOS programs read this to know
+  // how much RAM they have; setting it to the top of conventional memory
+  // (0xA000) reports 640K - PSP_SEG = ~639K as the arena size.
+  mem_writeb(psp + 0x02, 0x00);
+  mem_writeb(psp + 0x03, 0xA0);
 
   // Environment segment at offset 2Ch.
   build_env_block(program_path);
