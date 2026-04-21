@@ -53,6 +53,12 @@ jobs:
           echo "dosemu output: $output"
           echo "$output" | grep -q 'dosemu-hello-ok'
 
+      - name: Smoke (run HELLO.EXE, verify MZ loader)
+        run: |
+          output=$(build/dosemu tests/HELLO.EXE 2>/dev/null)
+          echo "dosemu output: $output"
+          echo "$output" | grep -q 'dosemu-hello-exe-ok'
+
       - name: Smoke (run WRITE.COM, verify file I/O + command tail)
         run: |
           workdir=$(mktemp -d)

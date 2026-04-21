@@ -58,6 +58,14 @@ constexpr uint16_t PSP_SEG          = 0x0100;
 constexpr uint16_t COM_ENTRY_OFFSET = 0x0100;
 constexpr uint32_t MAX_COM_SIZE     = 0xFF00;
 
+// .EXE image goes one paragraph past the PSP (PSP is 256 bytes = 16 paras).
+constexpr uint16_t EXE_LOAD_SEG     = PSP_SEG + 0x10;
+
+// Initial register snapshot a loader returns to dosemu_startup.
+struct InitialRegs {
+  uint16_t cs, ip, ss, sp, ax;
+};
+
 // --- Run-time state, reset by run_com() ------------------------------------
 
 std::string                 s_program;
@@ -268,34 +276,130 @@ Bitu dosemu_int21() {
 
 // --- Program load ----------------------------------------------------------
 
-bool load_com_into_guest(const std::string &path) {
+// Read a file entirely into a host buffer; empty on failure.
+std::vector<uint8_t> read_file(const std::string &path) {
+  std::vector<uint8_t> out;
   std::FILE *f = std::fopen(path.c_str(), "rb");
   if (!f) {
     std::fprintf(stderr, "dosemu: cannot open %s: %s\n",
                  path.c_str(), std::strerror(errno));
-    return false;
+    return out;
   }
   std::fseek(f, 0, SEEK_END);
   long size = std::ftell(f);
   std::fseek(f, 0, SEEK_SET);
-  if (size < 0 || static_cast<uint32_t>(size) > MAX_COM_SIZE) {
-    std::fprintf(stderr, "dosemu: %s is too large for a .COM file (%ld bytes)\n",
-                 path.c_str(), size);
-    std::fclose(f);
+  if (size < 0) { std::fclose(f); return out; }
+  out.resize(static_cast<size_t>(size));
+  if (std::fread(out.data(), 1, size, f) != static_cast<size_t>(size)) {
+    std::fprintf(stderr, "dosemu: read error on %s\n", path.c_str());
+    out.clear();
+  }
+  std::fclose(f);
+  return out;
+}
+
+// Load a .COM image at PSP_SEG:0100.  .COM conventions: CS=DS=ES=SS=PSP_SEG,
+// IP=100h, SP=FFFEh.
+bool load_com(const std::string &path, InitialRegs &out) {
+  const auto bytes = read_file(path);
+  if (bytes.empty()) return false;
+  if (bytes.size() > MAX_COM_SIZE) {
+    std::fprintf(stderr, "dosemu: %s too large for .COM (%zu bytes)\n",
+                 path.c_str(), bytes.size());
     return false;
   }
   const PhysPt load_addr = PSP_SEG * 16 + COM_ENTRY_OFFSET;
-  for (long i = 0; i < size; ++i) {
-    uint8_t b;
-    if (std::fread(&b, 1, 1, f) != 1) {
-      std::fprintf(stderr, "dosemu: read error on %s\n", path.c_str());
-      std::fclose(f);
+  for (size_t i = 0; i < bytes.size(); ++i)
+    mem_writeb(load_addr + i, bytes[i]);
+  out = {PSP_SEG, COM_ENTRY_OFFSET, PSP_SEG, 0xFFFE, 0};
+  return true;
+}
+
+// Helper: read a little-endian 16-bit word from a byte buffer.
+uint16_t rdw(const std::vector<uint8_t> &b, size_t off) {
+  return static_cast<uint16_t>(b[off]) |
+         (static_cast<uint16_t>(b[off + 1]) << 8);
+}
+
+// Load an MZ .EXE.  Parses the 32+ byte header, strips it, places the image
+// at EXE_LOAD_SEG:0, applies relocations by adding EXE_LOAD_SEG to each
+// fix-up target, and returns the initial register state.
+bool load_exe(const std::string &path, InitialRegs &out) {
+  const auto f = read_file(path);
+  if (f.size() < 0x1C) {
+    std::fprintf(stderr, "dosemu: %s too small to be an MZ .EXE\n", path.c_str());
+    return false;
+  }
+  if (!((f[0] == 'M' && f[1] == 'Z') || (f[0] == 'Z' && f[1] == 'M'))) {
+    std::fprintf(stderr, "dosemu: %s has no MZ signature\n", path.c_str());
+    return false;
+  }
+
+  const uint16_t bytes_in_last_page = rdw(f, 0x02);
+  const uint16_t pages_total        = rdw(f, 0x04);
+  const uint16_t reloc_count        = rdw(f, 0x06);
+  const uint16_t header_paragraphs  = rdw(f, 0x08);
+  const uint16_t init_ss            = rdw(f, 0x0E);
+  const uint16_t init_sp            = rdw(f, 0x10);
+  const uint16_t init_ip            = rdw(f, 0x14);
+  const uint16_t init_cs            = rdw(f, 0x16);
+  const uint16_t reloc_offset       = rdw(f, 0x18);
+
+  const size_t header_size_bytes = static_cast<size_t>(header_paragraphs) * 16;
+  size_t total_image_bytes = static_cast<size_t>(pages_total) * 512;
+  if (bytes_in_last_page) total_image_bytes -= (512 - bytes_in_last_page);
+  if (total_image_bytes < header_size_bytes || total_image_bytes > f.size()) {
+    std::fprintf(stderr, "dosemu: %s header describes %zu bytes, file has %zu\n",
+                 path.c_str(), total_image_bytes, f.size());
+    return false;
+  }
+
+  const size_t image_bytes = total_image_bytes - header_size_bytes;
+  const PhysPt load_addr   = EXE_LOAD_SEG * 16;
+  for (size_t i = 0; i < image_bytes; ++i)
+    mem_writeb(load_addr + i, f[header_size_bytes + i]);
+
+  // Apply relocations: each entry is (offset, segment); the word at
+  // (EXE_LOAD_SEG + segment):offset needs EXE_LOAD_SEG added.
+  for (uint16_t i = 0; i < reloc_count; ++i) {
+    const size_t entry = reloc_offset + i * 4u;
+    if (entry + 3 >= f.size()) {
+      std::fprintf(stderr, "dosemu: %s reloc %u out of bounds\n", path.c_str(), i);
       return false;
     }
-    mem_writeb(load_addr + i, b);
+    const uint16_t r_off = rdw(f, entry);
+    const uint16_t r_seg = rdw(f, entry + 2);
+    const PhysPt  target = (EXE_LOAD_SEG + r_seg) * 16 + r_off;
+    const uint16_t val   = mem_readb(target) | (mem_readb(target + 1) << 8);
+    const uint16_t fixed = static_cast<uint16_t>(val + EXE_LOAD_SEG);
+    mem_writeb(target,     static_cast<uint8_t>(fixed & 0xFF));
+    mem_writeb(target + 1, static_cast<uint8_t>((fixed >> 8) & 0xFF));
   }
-  std::fclose(f);
+
+  out = {
+    static_cast<uint16_t>(EXE_LOAD_SEG + init_cs),
+    init_ip,
+    static_cast<uint16_t>(EXE_LOAD_SEG + init_ss),
+    init_sp,
+    0,
+  };
   return true;
+}
+
+// Dispatch .COM vs .EXE by extension (case-insensitive).
+bool load_program(const std::string &path, InitialRegs &out) {
+  auto iends_with = [&](const char *suffix) {
+    size_t n = std::strlen(suffix);
+    if (path.size() < n) return false;
+    for (size_t i = 0; i < n; ++i) {
+      char a = std::tolower(static_cast<unsigned char>(path[path.size() - n + i]));
+      char b = std::tolower(static_cast<unsigned char>(suffix[i]));
+      if (a != b) return false;
+    }
+    return true;
+  };
+  if (iends_with(".exe")) return load_exe(path, out);
+  return load_com(path, out);
 }
 
 // Build a minimal PSP at PSP_SEG:0000.  Only the command tail at offset 80h
@@ -334,28 +438,30 @@ void dosemu_startup() {
 
   build_psp(s_args);
 
-  if (!load_com_into_guest(s_program)) {
+  InitialRegs ir;
+  if (!load_program(s_program, ir)) {
     s_exit_code = 1;
     shutdown_requested = true;
     return;
   }
 
-  // .COM entry: CS=DS=ES=SS=PSP_SEG, IP=100h, SP=FFFEh, AX=0
-  SegSet16(cs, PSP_SEG);
+  // DS and ES always point at the PSP at program entry; CS/IP/SS/SP come
+  // from the loader (differ between .COM and .EXE).
+  SegSet16(cs, ir.cs);
   SegSet16(ds, PSP_SEG);
   SegSet16(es, PSP_SEG);
-  SegSet16(ss, PSP_SEG);
-  reg_eip = COM_ENTRY_OFFSET;
-  reg_sp  = 0xFFFE;
-  reg_ax  = 0;
+  SegSet16(ss, ir.ss);
+  reg_eip = ir.ip;
+  reg_sp  = ir.sp;
+  reg_ax  = ir.ax;
 
   DOSBOX_RunMachine();
 }
 
 } // namespace
 
-int run_com(const char *program, const char *const *args, size_t nargs,
-            bool headless, int verbose) {
+int run_program(const char *program, const char *const *args, size_t nargs,
+                bool headless, int verbose) {
   s_program   = program;
   s_args.clear();
   for (size_t i = 0; i < nargs; ++i) s_args.emplace_back(args[i]);

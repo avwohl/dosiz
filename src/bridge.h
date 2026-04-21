@@ -19,11 +19,11 @@ const char *dosbox_version();
 // config, initialises SDL, activates modules, overrides SHELL_Init with our
 // own startup hook, installs an INT 21h handler that dispatches to
 // host-side C++, builds a minimal PSP with the command tail, loads
-// `program` as a .COM file, and runs the CPU until it exits via INT 21h
-// AH=4Ch.  Returns the DOS exit code (AL) on success, or -1 on startup
-// failure.
-int run_com(const char *program, const char *const *args, size_t nargs,
-            bool headless, int verbose);
+// `program` (.COM or .EXE by extension), and runs the CPU until it exits
+// via INT 21h AH=4Ch.  Returns the DOS exit code (AL) on success, or -1 on
+// startup failure.
+int run_program(const char *program, const char *const *args, size_t nargs,
+                bool headless, int verbose);
 
 } // namespace dosemu::bridge
 

@@ -87,9 +87,9 @@ int main(int argc, char **argv) {
   std::vector<const char *> argv_c;
   argv_c.reserve(cfg.args.size());
   for (const auto &a : cfg.args) argv_c.push_back(a.c_str());
-  int rc = dosemu::bridge::run_com(cfg.program.c_str(),
-                                   argv_c.data(), argv_c.size(),
-                                   cfg.headless, cfg.verbose);
+  int rc = dosemu::bridge::run_program(cfg.program.c_str(),
+                                       argv_c.data(), argv_c.size(),
+                                       cfg.headless, cfg.verbose);
   if (rc < 0) return 1;
   return rc;
 }

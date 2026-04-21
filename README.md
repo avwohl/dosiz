@@ -7,9 +7,10 @@ implementations running on the host. Same design as
 [cpmemu](https://github.com/avwohl/cpmemu), which does the equivalent for
 CP/M BDOS.
 
-**Status:** basic .COM programs run.
+**Status:** basic .COM and .EXE programs run.
 
 	dosemu tests/HELLO.COM           → prints dosemu-hello-ok
+	dosemu tests/HELLO.EXE           → prints dosemu-hello-exe-ok
 	dosemu tests/WRITE.COM ci-tail   → creates WROTE.TXT in CWD
 
 dosbox-staging is linked in-process for CPU + PC hardware. DOS INT 21h is
