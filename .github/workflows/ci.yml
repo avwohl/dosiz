@@ -29,20 +29,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: dosbox-staging/build
-          key: dosbox-staging-${{ hashFiles('dosbox-staging/meson.build', 'dosbox-staging/meson_options.txt') }}
+          key: dosbox-staging-${{ hashFiles('dosbox-staging/meson.build', 'dosbox-staging/meson_options.txt', 'patches/*.patch') }}
 
-      - name: Build dosbox-staging libraries
-        run: |
-          if [ ! -f dosbox-staging/build/libdosbox.a ]; then
-            meson setup dosbox-staging/build --buildtype=release dosbox-staging
-            ninja -C dosbox-staging/build
-          fi
-
-      - name: Configure dosemu
-        run: cmake -S src -B build
-
-      - name: Build dosemu
-        run: cmake --build build -j$(nproc)
+      - name: Build (applies submodule patch, meson+ninja, then dosemu)
+        run: make -j$(nproc)
 
       - name: Smoke (--version)
         run: build/dosemu --version

@@ -43,22 +43,23 @@ generated dosbox.conf.
 
 ## Building
 
-One-time setup: build dosbox-staging's static libraries via its own meson.
+Prerequisites (Debian/Ubuntu):
 
 	sudo apt install build-essential cmake ninja-build meson pkg-config \
 	  libsdl2-dev libsdl2-net-dev libpng-dev libopusfile-dev \
 	  libspeexdsp-dev libfluidsynth-dev libslirp-dev libasound2-dev \
-	  libxi-dev libglib2.0-dev
+	  libxi-dev libglib2.0-dev patch
 
-	meson setup dosbox-staging/build --buildtype=release dosbox-staging
-	ninja -C dosbox-staging/build
+Then:
 
-Then build dosemu itself:
-
-	cmake -S src -B build
-	cmake --build build -j$(nproc)
+	make               # applies the dosbox-staging patch, builds dosbox
+	                   # libs, builds dosemu
 
 	build/dosemu --version   # should report the linked dosbox-staging version
+	build/dosemu tests/HELLO.COM
+
+`make distclean` resets the dosbox-staging submodule to its upstream state
+and clears all build artifacts.
 
 ## Why
 

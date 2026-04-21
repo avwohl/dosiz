@@ -1,0 +1,40 @@
+diff --git a/src/gui/sdlmain.cpp b/src/gui/sdlmain.cpp
+index 04b7641ba..187c0dfd9 100644
+--- a/src/gui/sdlmain.cpp
++++ b/src/gui/sdlmain.cpp
+@@ -453,7 +453,7 @@ static double get_host_refresh_rate()
+ 	return refresh_rate;
+ }
+ 
+-static Section_prop* get_sdl_section()
++Section_prop* get_sdl_section()
+ {
+ 	assert(control);
+ 
+@@ -4234,7 +4234,7 @@ static std::vector<std::string> get_sdl_texture_renderers()
+ 	return drivers;
+ }
+ 
+-static void messages_add_command_line()
++void messages_add_command_line()
+ {
+ 	MSG_Add("DOSBOX_HELP",
+ 	        "Usage: %s [OPTION]... [PATH]\n"
+@@ -4307,7 +4307,7 @@ static void messages_add_command_line()
+ 	        "  -V, --version            Print version information and exit.\n");
+ }
+ 
+-static void messages_add_sdl()
++void messages_add_sdl()
+ {
+ 	MSG_Add("PROGRAM_CONFIG_PROPERTY_ERROR", "No such section or property: %s\n");
+ 
+@@ -4321,7 +4321,7 @@ static void messages_add_sdl()
+ 	TITLEBAR_AddMessages();
+ }
+ 
+-static void config_add_sdl()
++void config_add_sdl()
+ {
+ 	constexpr bool changeable_at_runtime = true;
+ 
