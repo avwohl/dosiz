@@ -1275,9 +1275,11 @@ Bitu dosemu_int31() {
       return CBRET_NONE;
     }
 
-    case 0x0210: {  // Get Protected Mode Interrupt Vector
-      // Input:  BL = vector
-      // Output: CX:(E)DX = selector:offset of the current PM IDT gate
+    // AX=0204/0205 "PM interrupt vector get/set" per DPMI 0.9 spec.
+    // (Earlier versions of this file mislabelled 0204/0205 as RM-IVT
+    // and used 0210/0212 for PM; this commit renumbers to match the
+    // spec.  Fixtures updated alongside.)
+    case 0x0204: {  // Get Protected Mode Interrupt Vector
       const PhysPt gate = IDT_SEG * 16u + reg_bl * 8u;
       const uint32_t off = mem_readb(gate + 0)
                          | (mem_readb(gate + 1) << 8)
@@ -1291,13 +1293,7 @@ Bitu dosemu_int31() {
       return CBRET_NONE;
     }
 
-    case 0x0212: {  // Set Protected Mode Interrupt Vector
-      // Input: BL = vector, CX = selector, (E)DX = offset
-      // Writes a gate matching the current client's bitness -- if the
-      // CS descriptor has D=1 we install a 32-bit interrupt gate
-      // (type 0x8E), otherwise 16-bit (type 0x86).  The client is
-      // responsible for the pointed-to code ending in the right IRET
-      // variant.
+    case 0x0205: {  // Set Protected Mode Interrupt Vector
       const bool bits32 = cpu.code.big;
       write_idt_gate(reg_bl, reg_cx, reg_edx, bits32);
       set_cf(false);
@@ -1324,9 +1320,7 @@ Bitu dosemu_int31() {
       return CBRET_NONE;
     }
 
-    case 0x0204: {  // Get real-mode interrupt vector
-      // Input:  BL = vector number
-      // Output: CX:DX = real-mode seg:off from the IVT (physical 0..3FF)
+    case 0x0200: {  // Get Real Mode Interrupt Vector
       const PhysPt v = static_cast<uint32_t>(reg_bl) * 4u;
       reg_dx = mem_readw(v);
       reg_cx = mem_readw(v + 2);
@@ -1334,11 +1328,7 @@ Bitu dosemu_int31() {
       return CBRET_NONE;
     }
 
-    case 0x0205: {  // Set real-mode interrupt vector
-      // Input:  BL = vector, CX:DX = new seg:off.  Writes the real-mode
-      // IVT directly.  A real DPMI host would track per-client hooks and
-      // restore the IVT on client exit; our single-client model writes
-      // through and lets the client own the vector.
+    case 0x0201: {  // Set Real Mode Interrupt Vector
       const PhysPt v = static_cast<uint32_t>(reg_bl) * 4u;
       mem_writew(v,     reg_dx);
       mem_writew(v + 2, reg_cx);

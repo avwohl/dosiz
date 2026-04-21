@@ -34,7 +34,7 @@ BITS 16
     jnz  switch_failed
 
     ; -- AX=0210 get INT 21h PM vector -------------------------------
-    mov ax, 0210h
+    mov ax, 0204h
     mov bl, 21h
     int 31h
     jc  fail_get21
@@ -42,7 +42,7 @@ BITS 16
     mov [saved_off], dx
 
     ; -- AX=0212 install same pointer at vector 70h -----------------
-    mov ax, 0212h
+    mov ax, 0205h
     mov bl, 70h
     mov cx, [saved_sel]
     mov dx, [saved_off]
@@ -50,7 +50,7 @@ BITS 16
     jc  fail_set70
 
     ; -- AX=0210 BL=70h to read it back -----------------------------
-    mov ax, 0210h
+    mov ax, 0204h
     mov bl, 70h
     int 31h
     jc  fail_get70

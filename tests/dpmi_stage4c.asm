@@ -33,7 +33,7 @@ BITS 16
     jnz  switch_failed
 
     ; -- AX=0204 read INT 21h vector ------------------------------
-    mov ax, 0204h
+    mov ax, 0200h
     mov bl, 21h
     int 31h
     jc  fail_get21
@@ -42,7 +42,7 @@ BITS 16
     jz  fail_get21
 
     ; -- AX=0205 set INT DEh to CAFE:BABEh --------------------------
-    mov ax, 0205h
+    mov ax, 0201h
     mov bl, 0DEh
     mov cx, 0CAFEh
     mov dx, 0BABEh
@@ -50,7 +50,7 @@ BITS 16
     jc  fail_set
 
     ; -- AX=0204 read it back --------------------------------------
-    mov ax, 0204h
+    mov ax, 0200h
     mov bl, 0DEh
     int 31h
     jc  fail_getde
