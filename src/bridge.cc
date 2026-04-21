@@ -1265,6 +1265,125 @@ Bitu dosemu_int31() {
       return CBRET_NONE;
     }
 
+    case 0x0301: {  // Call Real Mode Procedure With Far Return Frame
+      // Input:
+      //   BH        = flags (reserved 0)
+      //   CX        = words to copy PM stack -> RM stack (ignored here)
+      //   ES:(E)DI -> RealModeCallStructure (same layout as 0300).
+      //     The CS:IP fields at +2A/+2C name the RM routine to call.
+      // The host pushes a "stop" far-return address, far-calls the
+      // target; the routine is expected to RETF, landing on the stop
+      // callback which unwinds the nested emulator loop.
+      //
+      // Mechanism mirrors AX=0300's mode-switch round-trip: save PM
+      // state, swap IDTR to RM IVT, clear PE, load RM regs/segments
+      // from the struct, CALLBACK_RunRealFar, snapshot results,
+      // restore PE + PM IDTR, reload PM segments + CS cache, write
+      // results back.
+      const PhysPt rmcs = SegPhys(es) + reg_edi;
+
+      const uint32_t saved_cr0  = cpu.cr0;
+      const uint16_t saved_cs   = SegValue(cs);
+      const uint16_t saved_ds   = SegValue(ds);
+      const uint16_t saved_ss   = SegValue(ss);
+      const uint16_t saved_es   = SegValue(es);
+      const uint16_t saved_fs   = SegValue(fs);
+      const uint16_t saved_gs   = SegValue(gs);
+      const uint32_t saved_esp  = reg_esp;
+      const uint32_t saved_ebp  = reg_ebp;
+      const uint32_t saved_eax  = reg_eax;
+      const uint32_t saved_ebx  = reg_ebx;
+      const uint32_t saved_ecx  = reg_ecx;
+      const uint32_t saved_edx  = reg_edx;
+      const uint32_t saved_esi  = reg_esi;
+      const uint32_t saved_edi  = reg_edi;
+
+      const uint32_t s_edi = mem_readd(rmcs + 0x00);
+      const uint32_t s_esi = mem_readd(rmcs + 0x04);
+      const uint32_t s_ebp = mem_readd(rmcs + 0x08);
+      const uint32_t s_ebx = mem_readd(rmcs + 0x10);
+      const uint32_t s_edx = mem_readd(rmcs + 0x14);
+      const uint32_t s_ecx = mem_readd(rmcs + 0x18);
+      const uint32_t s_eax = mem_readd(rmcs + 0x1C);
+      const uint16_t s_es  = mem_readw(rmcs + 0x22);
+      const uint16_t s_ds  = mem_readw(rmcs + 0x24);
+      const uint16_t s_fs  = mem_readw(rmcs + 0x26);
+      const uint16_t s_gs  = mem_readw(rmcs + 0x28);
+      const uint16_t s_ip  = mem_readw(rmcs + 0x2A);
+      const uint16_t s_cs  = mem_readw(rmcs + 0x2C);
+      const uint16_t s_sp  = mem_readw(rmcs + 0x2E);
+      const uint16_t s_ss  = mem_readw(rmcs + 0x30);
+
+      const Bitu saved_idt_base  = CPU_SIDT_base();
+      const Bitu saved_idt_limit = CPU_SIDT_limit();
+      CPU_LIDT(0x3FF, 0);
+
+      CPU_SET_CRX(0, saved_cr0 & ~1u);
+
+      reg_eax = s_eax; reg_ebx = s_ebx; reg_ecx = s_ecx; reg_edx = s_edx;
+      reg_esi = s_esi; reg_edi = s_edi; reg_ebp = s_ebp;
+      SegSet16(ds, s_ds); SegSet16(es, s_es);
+      SegSet16(fs, s_fs); SegSet16(gs, s_gs);
+      if (s_ss != 0) {
+        SegSet16(ss, s_ss);
+        reg_esp = s_sp;
+      } else {
+        SegSet16(ss, 0x0050);
+        reg_esp = 0x0F00;
+      }
+
+      CALLBACK_RunRealFar(s_cs, s_ip);
+
+      const uint32_t r_eax = reg_eax;
+      const uint32_t r_ebx = reg_ebx;
+      const uint32_t r_ecx = reg_ecx;
+      const uint32_t r_edx = reg_edx;
+      const uint32_t r_esi = reg_esi;
+      const uint32_t r_edi = reg_edi;
+      const uint32_t r_ebp = reg_ebp;
+      const uint16_t r_flags = static_cast<uint16_t>(reg_flags & 0xFFFF);
+      const uint16_t r_es = SegValue(es);
+      const uint16_t r_ds = SegValue(ds);
+      const uint16_t r_fs = SegValue(fs);
+      const uint16_t r_gs = SegValue(gs);
+
+      CPU_SET_CRX(0, saved_cr0);
+      CPU_LIDT(saved_idt_limit, saved_idt_base);
+
+      CPU_SetSegGeneral(ds, saved_ds);
+      CPU_SetSegGeneral(ss, saved_ss);
+      CPU_SetSegGeneral(es, saved_es);
+      CPU_SetSegGeneral(fs, saved_fs);
+      CPU_SetSegGeneral(gs, saved_gs);
+      {
+        Descriptor cs_desc;
+        cpu.gdt.GetDescriptor(saved_cs, cs_desc);
+        Segs.val[cs]  = saved_cs;
+        Segs.phys[cs] = cs_desc.GetBase();
+      }
+
+      reg_eax = saved_eax; reg_ebx = saved_ebx;
+      reg_ecx = saved_ecx; reg_edx = saved_edx;
+      reg_esi = saved_esi; reg_edi = saved_edi;
+      reg_ebp = saved_ebp; reg_esp = saved_esp;
+
+      mem_writed(rmcs + 0x00, r_edi);
+      mem_writed(rmcs + 0x04, r_esi);
+      mem_writed(rmcs + 0x08, r_ebp);
+      mem_writed(rmcs + 0x10, r_ebx);
+      mem_writed(rmcs + 0x14, r_edx);
+      mem_writed(rmcs + 0x18, r_ecx);
+      mem_writed(rmcs + 0x1C, r_eax);
+      mem_writew(rmcs + 0x20, r_flags);
+      mem_writew(rmcs + 0x22, r_es);
+      mem_writew(rmcs + 0x24, r_ds);
+      mem_writew(rmcs + 0x26, r_fs);
+      mem_writew(rmcs + 0x28, r_gs);
+
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
     case 0x0300: {  // Simulate Real Mode Interrupt
       // Input:
       //   BL        = interrupt number

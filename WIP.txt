@@ -254,6 +254,10 @@ Fixture inventory (CI covers all these)
                                  full PM→RM→PM round-trip verified by
                                  checking the struct reflects the RM
                                  INT 1Ah AH=00 tick-count output.
+    DPMI_CALLRM.COM          -- AX=0301 Call Real Mode Procedure With
+                                 Far Return.  Bundles its own RM
+                                 routine (`mov ax,0x1234; retf`)
+                                 inside the .COM.
     HELLO_W.EXE              -- Open Watcom 16-bit hello (cross-compiled)
     HELLO_B.COM              -- bcc 0.16.21 hello (cross-compiled)
     EXE2BIN.EXE              -- real Open Watcom DOS-hosted utility

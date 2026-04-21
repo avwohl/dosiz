@@ -163,6 +163,17 @@ jobs:
           echo "dosemu output: $out"
           echo "$out" | grep -q 'dpmi-integration=ok'
 
+      - name: DPMI AX=0301: Call Real Mode Procedure With Far Return
+        run: |
+          # Same mode-switch machinery as AX=0300, but the RM dispatcher
+          # is CALLBACK_RunRealFar(cs, ip) instead of
+          # CALLBACK_RunRealInt.  Fixture bundles its own RM routine
+          # (`mov ax, 0x1234; retf`) inside the .COM, passes CS:IP to
+          # AX=0301, and verifies struct.EAX came back as 0x1234.
+          out=$(build/dosemu tests/DPMI_CALLRM.COM 2>/dev/null)
+          echo "dosemu output: $out"
+          echo "$out" | grep -q 'dpmi-callrm=ok'
+
       - name: DPMI AX=0300: Simulate Real Mode Interrupt
         run: |
           # Full mode-switch round-trip: save PM state, swap IDTR to
