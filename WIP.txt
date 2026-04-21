@@ -273,6 +273,12 @@ Fixture inventory (CI covers all these)
                                  RunMachine, nested-aware AH=4C.
     GRAND.COM + MIDDLE.COM   -- 3-level AH=4B chain with AH=4D exit
        + CHILD.COM              code round-trip at each level.
+    DPMI_DESCMGMT.COM        -- AX=0008/0009/000A/000B/000C descriptor
+                                 management round-trips.
+    DPMI_EXTRA.COM           -- AX=0102 resize + 0305/0306/0801/0B00
+                                 stub acks.
+    DPMI_RMCB.COM            -- AX=0303/0304 real-mode callback
+                                 address with full RM->PM->RM switch.
     HELLO_W.EXE              -- Open Watcom 16-bit hello (cross-compiled)
     HELLO_B.COM              -- bcc 0.16.21 hello (cross-compiled)
     EXE2BIN.EXE              -- real Open Watcom DOS-hosted utility

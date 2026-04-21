@@ -623,14 +623,17 @@ uint16_t                s_dpmi_entry_off    = 0;
 //   - no memory allocation: INT 31h AX=0501 et al. return "unsupported".
 //   - 32-bit (AX=1) entry handled like 16-bit for now.
 constexpr uint16_t GDT_SEG    = 0x1800;       // physical 0x18000
-constexpr uint16_t GDT_LIMIT  = 0x3F;         // 8 entries * 8 bytes - 1
+constexpr uint16_t GDT_LIMIT  = 0x4F;         // 10 entries * 8 bytes - 1
 constexpr uint16_t PM_CS_SEL   = 0x08;
 constexpr uint16_t PM_DS_SEL   = 0x10;
 constexpr uint16_t PM_SS_SEL   = 0x18;
 constexpr uint16_t PM_ES_SEL   = 0x20;
 constexpr uint16_t PM_CB_SEL   = 0x28;        // selector for dosbox's CB_SEG
 constexpr uint16_t PM_LDT_SEL  = 0x30;        // GDT[6]: LDT descriptor itself
-constexpr uint16_t PM_SHIM_SEL = 0x38;        // GDT[7]: 32-bit reflection shim area
+constexpr uint16_t PM_SHIM_SEL   = 0x38;      // GDT[7]: 32-bit reflection shim area
+constexpr uint16_t PM_CB_STACK   = 0x40;      // GDT[8]: PM scratch stack for AX=0303 callbacks
+constexpr uint16_t PM_CB_STACK_SEG  = 0x1E00; // physical 0x1E000, 4KB
+constexpr uint32_t PM_CB_STACK_SIZE = 0x1000;
 
 // 32-bit PM reflection shims.  Each slot is an 8-byte 16-bit code
 // sequence that re-invokes the dosbox native callback for a real-mode
@@ -764,6 +767,10 @@ Bitu dosemu_dpmi_entry() {
   // the shim bytes use 16-bit encodings with a `66` prefix to force
   // IRETD).  Access byte 0x9A = present, DPL=0, code, readable.
   write_gdt_descriptor(7, PM_SHIM_SEG * 16u, PM_SHIM_TOTAL - 1, 0x9A);
+  // GDT[8] = PM scratch stack used when AX=0303 real-mode callbacks
+  // fire and we need to enter the client's PM callback procedure with
+  // a sane SS:SP.  4KB, data r/w.
+  write_gdt_descriptor(8, PM_CB_STACK_SEG * 16u, PM_CB_STACK_SIZE - 1, 0x92);
 
   // Zero the LDT so every unallocated slot reads as a not-present
   // descriptor (access byte 0), then reset the in-use bitmap to match.
@@ -972,6 +979,169 @@ RealPt s_rm_stop_ptr = 0;
 // (init-time probe + fall back to INT 2Fh/1687h) works.
 Bitu dosemu_noop_retf() { return CBRET_NONE; }
 RealPt s_noop_retf_ptr = 0;
+
+// AX=0303/0304 real-mode callback pool.  Each slot corresponds to a
+// CB_RETF callback installed during dosemu_startup.  When RM code
+// FAR-CALLs the callback's RM address, its native handler looks up
+// the slot, switches to PM, invokes the client's PM procedure with
+// the standard RealModeCallStructure populated from RM context, then
+// switches back.  32 slots suffice for typical clients (DJGPP
+// installs 2-4; CWSDPMI maybe 8).
+constexpr int RM_CALLBACK_COUNT = 32;
+struct RmCallback {
+  bool     allocated   = false;
+  uint16_t pm_cs       = 0;
+  uint32_t pm_eip      = 0;
+  uint16_t struct_sel  = 0;
+  uint32_t struct_off  = 0;
+  RealPt   rm_addr     = 0;  // captured Get_RealPointer
+};
+RmCallback s_rm_callbacks[RM_CALLBACK_COUNT];
+
+// Linear address of a PM selector, used to locate the
+// RealModeCallStructure from its {sel, off} PM pointer.  The
+// selector's descriptor lives in our GDT (TI=0) or LDT (TI=1); read
+// the base out of the raw 8 bytes.
+PhysPt pm_selector_linear(uint16_t sel, uint32_t off) {
+  const uint16_t idx = sel >> 3;
+  const PhysPt p = (sel & 0x4) ? (LDT_SEG * 16u + idx * 8u)
+                               : (GDT_SEG * 16u + idx * 8u);
+  const uint32_t base = mem_readb(p + 2)
+                      | (mem_readb(p + 3) << 8)
+                      | (mem_readb(p + 4) << 16)
+                      | (mem_readb(p + 7) << 24);
+  return static_cast<PhysPt>(base + off);
+}
+
+Bitu do_rm_callback(int idx);  // forward
+Bitu dispatch_rm_callback(int idx);
+
+// Macro-generated per-slot trampolines so each callback is an
+// individually-addressable function pointer (dosbox's callback table
+// dispatches by callback_number, and each HandlerObject gets its own
+// number).  Each trampoline knows its slot index statically.
+#define RMCB_TRAMP(n) Bitu rmcb_##n() { return do_rm_callback(n); }
+RMCB_TRAMP(0)  RMCB_TRAMP(1)  RMCB_TRAMP(2)  RMCB_TRAMP(3)
+RMCB_TRAMP(4)  RMCB_TRAMP(5)  RMCB_TRAMP(6)  RMCB_TRAMP(7)
+RMCB_TRAMP(8)  RMCB_TRAMP(9)  RMCB_TRAMP(10) RMCB_TRAMP(11)
+RMCB_TRAMP(12) RMCB_TRAMP(13) RMCB_TRAMP(14) RMCB_TRAMP(15)
+RMCB_TRAMP(16) RMCB_TRAMP(17) RMCB_TRAMP(18) RMCB_TRAMP(19)
+RMCB_TRAMP(20) RMCB_TRAMP(21) RMCB_TRAMP(22) RMCB_TRAMP(23)
+RMCB_TRAMP(24) RMCB_TRAMP(25) RMCB_TRAMP(26) RMCB_TRAMP(27)
+RMCB_TRAMP(28) RMCB_TRAMP(29) RMCB_TRAMP(30) RMCB_TRAMP(31)
+#undef RMCB_TRAMP
+using RmcbFn = Bitu(*)();
+RmcbFn s_rmcb_table[RM_CALLBACK_COUNT] = {
+  rmcb_0, rmcb_1, rmcb_2, rmcb_3, rmcb_4, rmcb_5, rmcb_6, rmcb_7,
+  rmcb_8, rmcb_9, rmcb_10, rmcb_11, rmcb_12, rmcb_13, rmcb_14, rmcb_15,
+  rmcb_16, rmcb_17, rmcb_18, rmcb_19, rmcb_20, rmcb_21, rmcb_22, rmcb_23,
+  rmcb_24, rmcb_25, rmcb_26, rmcb_27, rmcb_28, rmcb_29, rmcb_30, rmcb_31,
+};
+
+// AX=0303 callback native dispatcher.  We're here because RM code
+// FAR-CALLed the RM address of slot `idx`.  CPU is in real mode.
+// Sequence:
+//   1. Snapshot RM register + segment state.
+//   2. Populate the client's RealModeCallStructure (PM pointer stored
+//      at 0303-time) with the RM context.
+//   3. Swap IDTR to our PM IDT, set CR0.PE=1.
+//   4. Load PM CS via manual descriptor cache refresh, DS/ES=struct_sel
+//      so client code can access the struct via ES:(E)DI, SS=scratch
+//      PM stack selector (GDT[8]).
+//   5. Push a 16-bit far-return address pointing at our RM-stop
+//      callback (accessed via PM_CB_SEL which covers CB_SEG).
+//   6. reg_eip = pm_eip; DOSBOX_RunMachine recursively.
+//   7. Client's PM callback RETFs to our stop callback, which returns
+//      CBRET_STOP and unwinds the nested machine.
+//   8. CR0.PE=0, restore RM IDTR.
+//   9. Copy the (possibly-mutated) struct back into reg_* and RM seg
+//      values so the RM caller sees the effects.
+//  10. Return CBRET_NONE; the stub's trailing `CB` (RETF) byte
+//      returns to the RM caller.
+//
+// 16-bit PM callbacks only this session -- a 32-bit callback's RETF
+// pops 6-byte frame so we'd need to push CS as a dword-padded word.
+Bitu do_rm_callback(int idx) {
+  if (idx < 0 || idx >= RM_CALLBACK_COUNT) return CBRET_NONE;
+  const RmCallback cb = s_rm_callbacks[idx];
+  if (!cb.allocated) return CBRET_NONE;
+
+  const PhysPt rmcs = pm_selector_linear(cb.struct_sel, cb.struct_off);
+  mem_writed(rmcs + 0x00, reg_edi);
+  mem_writed(rmcs + 0x04, reg_esi);
+  mem_writed(rmcs + 0x08, reg_ebp);
+  mem_writed(rmcs + 0x10, reg_ebx);
+  mem_writed(rmcs + 0x14, reg_edx);
+  mem_writed(rmcs + 0x18, reg_ecx);
+  mem_writed(rmcs + 0x1C, reg_eax);
+  mem_writew(rmcs + 0x20, static_cast<uint16_t>(reg_flags & 0xFFFF));
+  mem_writew(rmcs + 0x22, SegValue(es));
+  mem_writew(rmcs + 0x24, SegValue(ds));
+  mem_writew(rmcs + 0x26, SegValue(fs));
+  mem_writew(rmcs + 0x28, SegValue(gs));
+  mem_writew(rmcs + 0x2A, static_cast<uint16_t>(reg_eip & 0xFFFF));
+  mem_writew(rmcs + 0x2C, SegValue(cs));
+  mem_writew(rmcs + 0x2E, static_cast<uint16_t>(reg_esp & 0xFFFF));
+  mem_writew(rmcs + 0x30, SegValue(ss));
+
+  const uint32_t saved_cr0 = cpu.cr0;
+  const uint16_t saved_cs  = SegValue(cs);
+  const uint32_t saved_eip = reg_eip;
+  const uint16_t saved_ss  = SegValue(ss);
+  const uint32_t saved_esp = reg_esp;
+  const Bitu saved_idt_b = CPU_SIDT_base();
+  const Bitu saved_idt_l = CPU_SIDT_limit();
+
+  CPU_LIDT(IDT_LIMIT, IDT_SEG * 16u);
+  CPU_SET_CRX(0, saved_cr0 | 1u);
+
+  {
+    Descriptor desc;
+    cpu.gdt.GetDescriptor(cb.pm_cs, desc);
+    Segs.val[cs]  = cb.pm_cs;
+    Segs.phys[cs] = desc.GetBase();
+    cpu.code.big  = desc.Big() > 0;
+  }
+  CPU_SetSegGeneral(ds, cb.struct_sel);
+  CPU_SetSegGeneral(es, cb.struct_sel);
+  CPU_SetSegGeneral(ss, PM_CB_STACK);
+  reg_edi = cb.struct_off;
+  reg_esp = PM_CB_STACK_SIZE - 16;
+
+  const uint16_t stop_off = static_cast<uint16_t>(s_rm_stop_ptr & 0xFFFF);
+  reg_esp -= 4;
+  mem_writew(SegPhys(ss) + reg_esp + 0, stop_off);
+  mem_writew(SegPhys(ss) + reg_esp + 2, PM_CB_SEL);
+
+  reg_eip = cb.pm_eip;
+  DOSBOX_RunMachine();
+
+  CPU_SET_CRX(0, saved_cr0);
+  CPU_LIDT(saved_idt_l, saved_idt_b);
+
+  reg_edi = mem_readd(rmcs + 0x00);
+  reg_esi = mem_readd(rmcs + 0x04);
+  reg_ebp = mem_readd(rmcs + 0x08);
+  reg_ebx = mem_readd(rmcs + 0x10);
+  reg_edx = mem_readd(rmcs + 0x14);
+  reg_ecx = mem_readd(rmcs + 0x18);
+  reg_eax = mem_readd(rmcs + 0x1C);
+  reg_flags = mem_readw(rmcs + 0x20) | (reg_flags & 0xFFFF0000);
+  SegSet16(es, mem_readw(rmcs + 0x22));
+  SegSet16(ds, mem_readw(rmcs + 0x24));
+  SegSet16(fs, mem_readw(rmcs + 0x26));
+  SegSet16(gs, mem_readw(rmcs + 0x28));
+  SegSet16(ss, saved_ss);
+  reg_esp = saved_esp;
+  // CS/EIP were changed during the PM callback (via manual cache
+  // write + RunMachine).  The CPU loop resumes at (Segs.phys[cs] +
+  // reg_eip) after we return, and that has to be the stub's own
+  // trailing `CB` (RETF) byte so the RM caller gets its return
+  // address.  Restore both.
+  SegSet16(cs, saved_cs);
+  reg_eip = saved_eip;
+  return CBRET_NONE;
+}
 
 // Virtual interrupt state for AX=0900/0901/0902.  Mirrors IF visibility
 // from the client's perspective -- real CPU IF is under its own control
@@ -1405,6 +1575,44 @@ Bitu dosemu_int31() {
       reg_si = static_cast<uint16_t>((s_noop_retf_ptr >> 16) & 0xFFFF);
       reg_edi = static_cast<uint16_t>(s_noop_retf_ptr & 0xFFFF);
       set_cf(false);
+      return CBRET_NONE;
+    }
+
+    case 0x0303: {  // Allocate Real Mode Callback Address
+      // Input:  DS:(E)SI = PM callback procedure (selector:offset)
+      //         ES:(E)DI = client's RealModeCallStructure (sel:off)
+      // Output: CX:DX    = real-mode seg:off that RM code can FAR-CALL
+      //                    to invoke the registered PM procedure.
+      int slot = -1;
+      for (int i = 0; i < RM_CALLBACK_COUNT; ++i) {
+        if (!s_rm_callbacks[i].allocated) { slot = i; break; }
+      }
+      if (slot < 0) { reg_ax = 0x8015; set_cf(true); return CBRET_NONE; }
+      RmCallback &cb = s_rm_callbacks[slot];
+      cb.allocated  = true;
+      cb.pm_cs      = SegValue(ds);
+      cb.pm_eip     = reg_esi;
+      cb.struct_sel = SegValue(es);
+      cb.struct_off = reg_edi;
+      reg_cx = static_cast<uint16_t>((cb.rm_addr >> 16) & 0xFFFF);
+      reg_dx = static_cast<uint16_t>(cb.rm_addr & 0xFFFF);
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
+    case 0x0304: {  // Free Real Mode Callback Address
+      // Input: CX:DX = RM address of a callback allocated by 0303.
+      const RealPt target = (static_cast<uint32_t>(reg_cx) << 16) | reg_dx;
+      for (int i = 0; i < RM_CALLBACK_COUNT; ++i) {
+        if (s_rm_callbacks[i].allocated &&
+            s_rm_callbacks[i].rm_addr == target) {
+          s_rm_callbacks[i].allocated = false;
+          set_cf(false);
+          return CBRET_NONE;
+        }
+      }
+      reg_ax = 0x8024;               // invalid callback
+      set_cf(true);
       return CBRET_NONE;
     }
 
@@ -3120,6 +3328,20 @@ void dosemu_startup() {
   noop_retf_cb.Install(&dosemu_noop_retf, CB_RETF,
                        "dosemu no-op RETF (AX=0305/0306)");
   s_noop_retf_ptr = noop_retf_cb.Get_RealPointer();
+
+  // 32 RM callback slots for AX=0303.  Each is a CB_RETF callback
+  // whose FE 38 dispatches to its dedicated rmcb_N trampoline; the
+  // trampoline calls do_rm_callback(N) which handles the mode switch.
+  // Local array: destructs on dosemu_startup's return, same lifetime
+  // pattern as the other callbacks above.
+  CALLBACK_HandlerObject rmcb_objs[RM_CALLBACK_COUNT];
+  for (int i = 0; i < RM_CALLBACK_COUNT; ++i) {
+    char name[32];
+    std::snprintf(name, sizeof(name), "dosemu RM callback %d", i);
+    rmcb_objs[i].Install(s_rmcb_table[i], CB_RETF, name);
+    s_rm_callbacks[i].rm_addr = rmcb_objs[i].Get_RealPointer();
+    s_rm_callbacks[i].allocated = false;
+  }
 
   // Second callback: same native handler, but the dosbox-emitted stub
   // ends in IRETD (`66 CF`) so it can correctly unwind the 12-byte

@@ -205,6 +205,18 @@ jobs:
           echo "$out" | grep -q 'child=ran'
           echo "$out" | grep -q 'spawn=ok'
 
+      - name: DPMI AX=0303/0304 real-mode callback addresses
+        run: |
+          # PM client registers a callback via 0303, calls a RM
+          # trampoline (via 0301) that FAR-CALLs the returned RM
+          # address.  The 0303 handler enters PM, invokes the callback,
+          # returns.  Callback mutates struct.EAX to 0xABCD; fixture
+          # verifies after 0301 completes.  Tests nested RM->PM->RM
+          # mode switching.
+          out=$(build/dosemu tests/DPMI_RMCB.COM 2>/dev/null)
+          echo "dosemu output: $out"
+          echo "$out" | grep -q 'dpmi-rmcb=ok'
+
       - name: DPMI descriptor mgmt AX=0008/0009/000A/000B/000C
         run: |
           out=$(build/dosemu tests/DPMI_DESCMGMT.COM 2>/dev/null)
