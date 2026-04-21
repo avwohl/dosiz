@@ -252,17 +252,20 @@ Ordered roughly by leverage / difficulty:
    - Exception handlers installed (2087074).
    - Gate bitness matches entry BIG (63f0ef3).
    - BIG-bit misread fixed (4e4def8): was 0x4000, spec is 0x2000.
-   wd.exe now enters 32-bit PM correctly and executes code.  Next
-   failure: `IRET:Outer level:Stack segment not writable` at
-   ~0.23s in.  dosbox instrumentation showed the IRET read
-   `n_ss=0x69e8  n_esp=0xcf026de8  n_cs_rpl=1` -- all values are
-   uninitialized-memory garbage, which means wd.exe ran an IRET
-   whose stack frame was never properly set up.  Most likely
-   path: wd.exe hit an INT 21h, our PM INT 21h handler (which
-   runs in 16-bit CB_SEL through the `66 CF` IRETD shim) pushed a
-   bad frame, and when wd.exe's IRETD unwinds it, the stack is
-   garbage.  Need to trace what INT fired and verify the handler
-   preserves stack correctly across the 16-bit shim boundary.
+   - set_cf frame-offset bug in 32-bit gates fixed (0b57f67):
+     was writing to [SP+4] (CS word) instead of [SP+8] (EFLAGS),
+     corrupting CS's RPL to 1 on every CF-returning INT 21h/31h.
+   wd.exe now executes 0x135 bytes past entry (through two
+   INT 21h calls incl. AH=30h DOS version + AH=FFh soft-fail)
+   and GP-faults at IP=0x6f239 on a `66 26 8e 1d f0 6a 00 00`
+   instruction (roughly `mov ds, es:[6af0h]`).  Error code
+   0x4900 = the selector it tried to load.  That memory slot
+   looks like a DOS4G-initialized "pre-loaded PM selector" --
+   real DOS4G's RM stub fills well-known offsets in the data
+   object with PM selectors before entry; we leave them zeroed.
+   Next piece: replicate DOS4G's pre-entry environment setup,
+   which is genuine DPMI-host scaffolding (PSP/env/arg pointers,
+   fixed selectors for transfer buffer etc.).
 3. **Cross-build a DJGPP tiny hello** (separate toolchain). Might
    give us a COFF-in-MZ path that's easier than LE for some
    targets.
@@ -337,6 +340,8 @@ External-tool integration:
 ## Commits since the original handoff (1222c44)
 
 ```
+0b57f67  INT 21h/31h: fix set_cf frame offset for 32-bit gates
+3666d20  WIP.md: wd.exe next-failure instrumented
 d65a0c2  WIP.md: LE BIG bit fix + wd.exe next failure identified
 4e4def8  LE loader: BIG bit is 0x2000, not 0x4000
 6a8933a  WIP.md: bitness-matched exception gates landed
@@ -384,5 +389,5 @@ ffcdbff  DPMI stage 4 (subset): INT 31h AX=0400 + get/set segment base
 bfe1c76  DPMI stage 5 (32-bit): end-to-end fixture + IRETD callback stub
 ```
 
-42 commits from the session's start (`1222c44` "WIP.txt: handoff notes").
+43 commits from the session's start (`1222c44` "WIP.txt: handoff notes").
 All on main, all pushed.
