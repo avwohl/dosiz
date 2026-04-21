@@ -608,6 +608,18 @@ constexpr uint16_t PM_CS_SEL  = 0x08;
 constexpr uint16_t PM_DS_SEL  = 0x10;
 constexpr uint16_t PM_SS_SEL  = 0x18;
 constexpr uint16_t PM_ES_SEL  = 0x20;
+constexpr uint16_t PM_CB_SEL  = 0x28;         // selector for dosbox's CB_SEG
+
+constexpr uint16_t IDT_SEG    = 0x1A00;       // physical 0x1A000
+constexpr uint16_t IDT_LIMIT  = 0x7FF;        // 256 entries * 8 bytes - 1
+
+// Real pointer of our INT 21h callback.  Captured in dosemu_startup and
+// used to build an IDT interrupt gate when transitioning to PM, so INT 21h
+// from protected-mode clients routes through the same host-C++ handler
+// (memory accesses use SegPhys(), which returns the descriptor base in PM
+// and seg*16 in RM -- transparent to the caller).
+uint16_t s_int21_cb_seg = 0;
+uint16_t s_int21_cb_off = 0;
 
 void write_gdt_descriptor(int idx, uint32_t base, uint32_t limit,
                           uint8_t access) {
@@ -620,6 +632,21 @@ void write_gdt_descriptor(int idx, uint32_t base, uint32_t limit,
   mem_writeb(p + 5, access);
   mem_writeb(p + 6, ((limit >> 16) & 0x0F));   // flags high nibble = 0: 16-bit, byte-granular
   mem_writeb(p + 7, (base >> 24) & 0xFF);
+}
+
+// Write a 16-bit interrupt gate to IDT[idx].  Target selector:offset is
+// where control transfers when INT idx fires in PM.  Type = 0x86: P=1,
+// DPL=0, 16-bit interrupt gate (IRET popping 16-bit IP+CS+FLAGS).
+void write_idt_gate_16(int idx, uint16_t sel, uint16_t off) {
+  const PhysPt p = IDT_SEG * 16u + idx * 8u;
+  mem_writeb(p + 0, off & 0xFF);
+  mem_writeb(p + 1, (off >> 8) & 0xFF);
+  mem_writeb(p + 2, sel & 0xFF);
+  mem_writeb(p + 3, (sel >> 8) & 0xFF);
+  mem_writeb(p + 4, 0);
+  mem_writeb(p + 5, 0x86);                      // present, DPL=0, 16-bit int gate
+  mem_writeb(p + 6, 0);
+  mem_writeb(p + 7, 0);
 }
 
 Bitu dosemu_dpmi_entry() {
@@ -646,8 +673,21 @@ Bitu dosemu_dpmi_entry() {
   write_gdt_descriptor(2, SegValue(ds) * 16, 0xFFFF, 0x92);         // data
   write_gdt_descriptor(3, SegValue(ss) * 16, 0xFFFF, 0x92);         // stack
   write_gdt_descriptor(4, SegValue(es) * 16, 0xFFFF, 0x92);         // es
+  // Selector 0x28: 16-bit code segment covering dosbox's callback area
+  // (CB_SEG=0xF000 -> base 0xF0000).  IDT gates target this selector so
+  // INT N from PM reaches our C++ handlers via dosbox's callback machinery.
+  write_gdt_descriptor(5, 0xF0000, 0xFFFF, 0x9A);
 
   CPU_LGDT(GDT_LIMIT, GDT_SEG * 16u);
+
+  // Build an IDT large enough for all 256 vectors.  Most entries are
+  // uninstalled (limit check will fault) since this program shouldn't
+  // trigger them -- we CLI'd before the switch.  Only INT 21h is wired
+  // to our real-mode callback via a 16-bit interrupt gate.
+  for (int i = 0; i < 256; ++i) write_idt_gate_16(i, 0, 0);   // zero
+  if (s_int21_cb_seg || s_int21_cb_off)
+    write_idt_gate_16(0x21, PM_CB_SEL, s_int21_cb_off);
+  CPU_LIDT(IDT_LIMIT, IDT_SEG * 16u);
 
   // Replace the stacked return-address CS with our PM code selector so the
   // stub's retf lands in PM rather than at an invalid real-mode segment.
@@ -804,7 +844,7 @@ Bitu dosemu_int21() {
     }
 
     case 0x0A: {  // Buffered input.  DS:DX -> [max_len][actual_len][data...]
-      const PhysPt buf = SegValue(ds) * 16u + reg_dx;
+      const PhysPt buf = SegPhys(ds) + reg_dx;
       const uint8_t max = mem_readb(buf);
       if (max == 0) {
         mem_writeb(buf + 1, 0);
@@ -826,7 +866,7 @@ Bitu dosemu_int21() {
     }
 
     case 0x09: {  // Write $-terminated string at DS:DX to stdout
-      const PhysPt base = SegValue(ds) * 16;
+      const PhysPt base = SegPhys(ds);
       for (uint16_t off = reg_dx;; ++off) {
         const uint8_t c = mem_readb(base + off);
         if (c == '$') break;
@@ -893,7 +933,7 @@ Bitu dosemu_int21() {
         text_mode = it->second.text_mode;
         pending = &it->second.read_pending;
       }
-      const PhysPt dst = SegValue(ds) * 16 + reg_dx;
+      const PhysPt dst = SegPhys(ds) + reg_dx;
       uint16_t out = 0;
       while (out < reg_cx) {
         if (text_mode && *pending >= 0) {
@@ -931,7 +971,7 @@ Bitu dosemu_int21() {
         text_mode = it->second.text_mode;
       }
       std::vector<uint8_t> buf(reg_cx);
-      const PhysPt src = SegValue(ds) * 16 + reg_dx;
+      const PhysPt src = SegPhys(ds) + reg_dx;
       for (uint16_t i = 0; i < reg_cx; ++i) buf[i] = mem_readb(src + i);
       if (text_mode) {
         // DOS sends CR LF for newlines.  Host wants Unix-style LF.  Strip
@@ -968,7 +1008,7 @@ Bitu dosemu_int21() {
     }
 
     case 0x1A: {  // Set DTA to DS:DX
-      s_dta_linear = SegValue(ds) * 16u + reg_dx;
+      s_dta_linear = SegPhys(ds) + reg_dx;
       return CBRET_NONE;
     }
 
@@ -1028,7 +1068,7 @@ Bitu dosemu_int21() {
                   // implementation: report "no valid filename" and advance
                   // SI past whitespace so callers don't loop.
       while (true) {
-        const uint8_t c = mem_readb(SegValue(ds) * 16u + reg_si);
+        const uint8_t c = mem_readb(SegPhys(ds) + reg_si);
         if (c != ' ' && c != '\t') break;
         ++reg_si;
       }
@@ -1203,7 +1243,7 @@ Bitu dosemu_int21() {
                   // Report US defaults; real programs use this for date,
                   // currency, and list-separator formatting.
       if (reg_al != 0) { return_error(0x01); break; }
-      const PhysPt buf = SegValue(ds) * 16u + reg_dx;
+      const PhysPt buf = SegPhys(ds) + reg_dx;
       for (int i = 0; i < 32; ++i) mem_writeb(buf + i, 0);
       mem_writew(buf + 0, 0);       // date format MM/DD/YY
       mem_writeb(buf + 2, '$');     // currency symbol "$"
@@ -1269,7 +1309,7 @@ Bitu dosemu_int21() {
       char drive = s_current_drive;
       if (reg_dl != 0) drive = 'A' + (reg_dl - 1);
       const std::string &cwd = s_drive_cwd[drive];   // "" if not set
-      const PhysPt dst = SegValue(ds) * 16 + reg_si;
+      const PhysPt dst = SegPhys(ds) + reg_si;
       for (size_t i = 0; i < cwd.size() && i < 63; ++i)
         mem_writeb(dst + i, static_cast<uint8_t>(cwd[i]));
       mem_writeb(dst + std::min(cwd.size(), size_t{63}), 0);
@@ -1600,6 +1640,13 @@ void dosemu_startup() {
   CALLBACK_HandlerObject int21_cb;
   int21_cb.Install(&dosemu_int21, CB_INT21, "dosemu Int 21");
   int21_cb.Set_RealVec(0x21);
+  // Capture the callback's RM address so the DPMI entry can route PM
+  // INT 21h through a GDT/IDT gate targeting the same native-call bytes.
+  {
+    const RealPt rp = int21_cb.Get_RealPointer();
+    s_int21_cb_seg = static_cast<uint16_t>((rp >> 16) & 0xFFFF);
+    s_int21_cb_off = static_cast<uint16_t>(rp & 0xFFFF);
+  }
 
   // Explicit INT 31h denial stub (DPMI stage 1 -- see dpmi_plan.md).
   CALLBACK_HandlerObject int31_cb;
