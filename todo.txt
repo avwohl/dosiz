@@ -1,0 +1,21 @@
+create public repo avwohl/dosemu
+create an msdos emulator
+for a template of how it should work see ../cpmemu
+ that provides a z80 emulator and translates CP/M system
+ calls to linux.  Here use dosbox for the 80386 emulator
+ and provide fake msdos calls that translate to linux.
+Most emulators use native disks (dos, cp/m) when doing
+ development this involves a lot moving files in and out
+ of native disks.  By translating system calls this is avoided
+Note the .cfg section of cpmemu for specifying options and
+ end of line translations
+This emulator should provide DPMI emulation as well as msdos.
+For a refrence of what msdos does I suggest https://freedos.org/
+ It is free open source. Feel free to use code , however be sure to
+ credit it and keep the copyright and provide a copy of its source code if you do.
+write as much as possible in c++
+for command line dos tools like compilers there should be a way to run this
+ emulator as a command line linux tool. For example if a dos c compiler is run
+ it need not create a window.
+It will probably be nessary to povide video card emulation like ../qxDOS
+

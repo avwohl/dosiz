@@ -1,0 +1,44 @@
+# Build artifacts
+build/
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.pc
+*.lib
+*.pdb
+*.ilk
+**__pycache__*
+
+# Executables
+src/dosemu
+src/dosemu.exe
+*.exe
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+
+# vcpkg (if used for dosbox deps)
+vcpkg_installed/
+
+# Downloaded / built DOS disk images
+fd/
+*.img
+
+# Packaging artifacts
+dist/
+*.msix
+*.deb
+*.rpm
+*.pfx
+
+# Editor / OS
+*~
+*.swp
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
