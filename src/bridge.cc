@@ -1243,7 +1243,6 @@ PhysPt pm_selector_linear(uint16_t sel, uint32_t off) {
 }
 
 Bitu do_rm_callback(int idx);  // forward
-Bitu dispatch_rm_callback(int idx);
 
 // Macro-generated per-slot trampolines so each callback is an
 // individually-addressable function pointer (dosbox's callback table
@@ -3442,9 +3441,6 @@ bool load_com_at(const std::string &path, uint16_t psp_seg, InitialRegs &out) {
   out = {psp_seg, COM_ENTRY_OFFSET, psp_seg, 0xFFFE, 0};
   return true;
 }
-bool load_com(const std::string &path, InitialRegs &out) {
-  return load_com_at(path, PSP_SEG, out);
-}
 
 // Helper: read a little-endian 16-bit word from a byte buffer.
 uint16_t rdw(const std::vector<uint8_t> &b, size_t off) {
@@ -4030,9 +4026,6 @@ bool load_exe_at(const std::string &path, uint16_t psp_seg, InitialRegs &out) {
     0,
   };
   return true;
-}
-bool load_exe(const std::string &path, InitialRegs &out) {
-  return load_exe_at(path, PSP_SEG, out);
 }
 
 // Dispatch .COM vs .EXE by extension (case-insensitive).  load_program
