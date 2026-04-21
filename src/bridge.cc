@@ -963,6 +963,16 @@ Bitu dosemu_int16() {
 Bitu dosemu_rm_stop() { return CBRET_STOP; }
 RealPt s_rm_stop_ptr = 0;
 
+// No-op callback handed back by AX=0305/0306 as state-save and raw-
+// mode-switch routine addresses.  Real hosts provide routines that
+// actually save/restore or switch modes; we hand back legal RETF
+// stubs so clients that merely *probe* and discard the addresses
+// get a success answer.  Clients that actually try to call them
+// and expect side effects will not see any, but the primary use
+// (init-time probe + fall back to INT 2Fh/1687h) works.
+Bitu dosemu_noop_retf() { return CBRET_NONE; }
+RealPt s_noop_retf_ptr = 0;
+
 // Virtual interrupt state for AX=0900/0901/0902.  Mirrors IF visibility
 // from the client's perspective -- real CPU IF is under its own control
 // via STI/CLI.  We don't forward IF changes to dosbox's real IRQ
@@ -1159,6 +1169,108 @@ Bitu dosemu_int31() {
       return CBRET_NONE;
     }
 
+    case 0x0008: {  // Set Segment Limit
+      // Input:  BX = selector, CX:DX = new limit (byte count or page
+      //         count depending on granularity).
+      // We accept a byte limit in CX:DX and auto-switch to page
+      // granularity (G=1) when it exceeds 0xFFFFF.  Descriptor access
+      // byte and base are preserved.
+      if (!selector_is_valid(reg_bx)) {
+        reg_ax = 0x8022; set_cf(true); return CBRET_NONE;
+      }
+      uint32_t limit = (static_cast<uint32_t>(reg_cx) << 16) | reg_dx;
+      const bool need_g = (limit > 0xFFFFF);
+      if (need_g) limit = (limit >> 12);  // 4KB pages
+      const uint16_t idx = reg_bx >> 3;
+      const PhysPt p = selector_table_base(reg_bx) + idx * 8u;
+      mem_writeb(p + 0, limit & 0xFF);
+      mem_writeb(p + 1, (limit >> 8) & 0xFF);
+      // Preserve bits 4-7 (D/AVL) of flags nibble; rewrite bits 0-3
+      // (limit high) and bit 7 (G).
+      uint8_t flags = mem_readb(p + 6);
+      flags &= 0x60;                                 // keep D, AVL
+      flags |= (limit >> 16) & 0x0F;
+      if (need_g) flags |= 0x80;                     // G=1
+      mem_writeb(p + 6, flags);
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
+    case 0x0009: {  // Set Descriptor Access Rights
+      // Input:  BX = selector, CX = access rights word
+      //   CL = access byte (bit 7 P, bits 5-6 DPL, bit 4 S,
+      //        bits 0-3 type)
+      //   CH = bits 4-7 of flags nibble (G, D, AVL -- high of byte 6)
+      if (!selector_is_valid(reg_bx)) {
+        reg_ax = 0x8022; set_cf(true); return CBRET_NONE;
+      }
+      const uint16_t idx = reg_bx >> 3;
+      const PhysPt p = selector_table_base(reg_bx) + idx * 8u;
+      mem_writeb(p + 5, reg_cl);
+      uint8_t flags = mem_readb(p + 6);
+      flags = (flags & 0x0F) | (reg_ch & 0xF0);
+      mem_writeb(p + 6, flags);
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
+    case 0x000A: {  // Create Alias Descriptor
+      // Input:  BX = source selector (must be code or data)
+      // Output: AX = new LDT selector with the same base and limit
+      //         but always readable+writable data (access = 0x92).
+      if (!selector_is_valid(reg_bx)) {
+        reg_ax = 0x8022; set_cf(true); return CBRET_NONE;
+      }
+      const uint16_t src_idx = reg_bx >> 3;
+      const PhysPt src = selector_table_base(reg_bx) + src_idx * 8u;
+      const uint32_t base = mem_readb(src + 2)
+                          | (mem_readb(src + 3) << 8)
+                          | (mem_readb(src + 4) << 16)
+                          | (mem_readb(src + 7) << 24);
+      const uint32_t limit_lo = mem_readb(src + 0) | (mem_readb(src + 1) << 8);
+      const uint32_t limit_hi = mem_readb(src + 6) & 0x0F;
+      const uint32_t limit    = limit_lo | (limit_hi << 16);
+      const uint16_t new_idx = ldt_find_run(1);
+      if (new_idx == 0) {
+        reg_ax = 0x8011; set_cf(true); return CBRET_NONE;
+      }
+      ldt_set(new_idx, true);
+      write_ldt_descriptor(new_idx, base, limit, 0x92);
+      reg_ax = (new_idx << 3) | 0x04;
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
+    case 0x000B: {  // Get Descriptor (raw 8 bytes)
+      // Input:  BX = selector, ES:(E)DI = destination buffer
+      // Copies the 8 descriptor bytes verbatim.  Client can decode
+      // them however it wants without going through 0006/0008/0009.
+      if (!selector_is_valid(reg_bx)) {
+        reg_ax = 0x8022; set_cf(true); return CBRET_NONE;
+      }
+      const uint16_t idx = reg_bx >> 3;
+      const PhysPt src = selector_table_base(reg_bx) + idx * 8u;
+      const PhysPt dst = SegPhys(es) + reg_edi;
+      for (int i = 0; i < 8; ++i) mem_writeb(dst + i, mem_readb(src + i));
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
+    case 0x000C: {  // Set Descriptor (raw 8 bytes)
+      // Input:  BX = selector, ES:(E)DI = source buffer
+      // Writes the 8 bytes verbatim into the LDT (or GDT) slot.
+      // Caller is responsible for a valid access byte / flags.
+      if (!selector_is_valid(reg_bx)) {
+        reg_ax = 0x8022; set_cf(true); return CBRET_NONE;
+      }
+      const uint16_t idx = reg_bx >> 3;
+      const PhysPt dst = selector_table_base(reg_bx) + idx * 8u;
+      const PhysPt src = SegPhys(es) + reg_edi;
+      for (int i = 0; i < 8; ++i) mem_writeb(dst + i, mem_readb(src + i));
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
     case 0x0100: {  // Allocate DOS Memory Block
       // Input:  BX = paragraphs to allocate
       // Output: AX = real-mode segment, DX = PM selector aliasing it
@@ -1196,6 +1308,41 @@ Bitu dosemu_int31() {
       s_seg2desc_cache[data_seg] = ldt_idx;
       reg_ax = data_seg;
       reg_dx = (ldt_idx << 3) | 0x04;   // TI=1 (LDT), RPL=0
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
+    case 0x0102: {  // Resize DOS Memory Block
+      // Input:  BX = selector (returned by AX=0100)
+      //         DX = new size in paragraphs
+      // Output: on failure CF=1, AX=error code, BX = largest available
+      if (!(reg_bx & 0x4) || !selector_is_valid(reg_bx)) {
+        reg_ax = 0x8022; set_cf(true); return CBRET_NONE;
+      }
+      const uint16_t idx = reg_bx >> 3;
+      if (!ldt_bit(idx)) {
+        reg_ax = 0x8022; set_cf(true); return CBRET_NONE;
+      }
+      const PhysPt p = LDT_SEG * 16u + idx * 8u;
+      const uint32_t base = mem_readb(p + 2)
+                          | (mem_readb(p + 3) << 8)
+                          | (mem_readb(p + 4) << 16)
+                          | (mem_readb(p + 7) << 24);
+      const uint16_t data_seg = static_cast<uint16_t>(base >> 4);
+      uint16_t largest = 0;
+      const uint16_t got = mcb_resize(data_seg, reg_dx, largest);
+      if (got != reg_dx) {
+        reg_ax = 0x8013;
+        reg_bx = largest;
+        set_cf(true);
+        return CBRET_NONE;
+      }
+      // Update the descriptor's limit to match the new size.
+      const uint32_t new_limit_bytes = (static_cast<uint32_t>(reg_dx) << 4) - 1u;
+      mem_writeb(p + 0, new_limit_bytes & 0xFF);
+      mem_writeb(p + 1, (new_limit_bytes >> 8) & 0xFF);
+      const uint8_t flags = mem_readb(p + 6);
+      mem_writeb(p + 6, (flags & 0xF0) | ((new_limit_bytes >> 16) & 0x0F));
       set_cf(false);
       return CBRET_NONE;
     }
@@ -1247,11 +1394,59 @@ Bitu dosemu_int31() {
       return CBRET_NONE;
     }
 
+    case 0x0305: {  // Get State Save/Restore Addresses
+      // Returns buffer size (AX, paragraphs-or-bytes depending on
+      // caller) and two far pointers to save/restore stubs.  With
+      // no virtualization to save, we return 0 bytes and point both
+      // routines at a no-op RETF callback.
+      reg_ax = 0;                                    // buffer size
+      reg_bx = static_cast<uint16_t>((s_noop_retf_ptr >> 16) & 0xFFFF);
+      reg_cx = static_cast<uint16_t>(s_noop_retf_ptr & 0xFFFF);
+      reg_si = static_cast<uint16_t>((s_noop_retf_ptr >> 16) & 0xFFFF);
+      reg_edi = static_cast<uint16_t>(s_noop_retf_ptr & 0xFFFF);
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
+    case 0x0306: {  // Get Raw Mode Switch Addresses
+      reg_bx = static_cast<uint16_t>((s_noop_retf_ptr >> 16) & 0xFFFF);
+      reg_cx = static_cast<uint16_t>(s_noop_retf_ptr & 0xFFFF);
+      reg_si = static_cast<uint16_t>((s_noop_retf_ptr >> 16) & 0xFFFF);
+      reg_edi = static_cast<uint16_t>(s_noop_retf_ptr & 0xFFFF);
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
     case 0x0600:   // Lock Linear Region (no-op -- no paging)
-    case 0x0601: { // Unlock Linear Region (no-op)
+    case 0x0601:   // Unlock Linear Region (no-op)
+    case 0x0602:   // Mark RM Region As Pageable (no-op)
+    case 0x0603:   // Mark RM Region As Unpageable (no-op)
+    case 0x0702:   // Mark Page As Demand Paging Candidate (no-op)
+    case 0x0703: { // Discard Page Contents (no-op)
       // Input BX:CX = linear addr, SI:DI = size.  Ignored: physical
       // memory is never paged out in our model, so the "locked"
-      // promise is trivially satisfied.
+      // promise is trivially satisfied and pageability marks have
+      // no bearing.
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
+    case 0x0801: { // Free Physical Address Mapping (no-op)
+      // We don't track mappings (AX=0800 is identity pass-through),
+      // so there's nothing to free.
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
+    case 0x0B00:   // Set Debug Watchpoint
+    case 0x0B01:   // Clear Debug Watchpoint
+    case 0x0B02:   // Get State of Debug Watchpoint
+    case 0x0B03: { // Reset Debug Watchpoint
+      // Debug registers (DR0-DR7) aren't wired through.  We accept
+      // the request so init code proceeds, but we can't actually
+      // deliver a breakpoint interrupt.  AX=0B00 returns a fake
+      // watchpoint handle (always 0); others acknowledge.
+      reg_bx = 0;
       set_cf(false);
       return CBRET_NONE;
     }
@@ -2920,6 +3115,11 @@ void dosemu_startup() {
   CALLBACK_HandlerObject rm_stop_cb;
   rm_stop_cb.Install(&dosemu_rm_stop, CB_IRET, "dosemu RM stop (AX=0302)");
   s_rm_stop_ptr = rm_stop_cb.Get_RealPointer();
+
+  CALLBACK_HandlerObject noop_retf_cb;
+  noop_retf_cb.Install(&dosemu_noop_retf, CB_RETF,
+                       "dosemu no-op RETF (AX=0305/0306)");
+  s_noop_retf_ptr = noop_retf_cb.Get_RealPointer();
 
   // Second callback: same native handler, but the dosbox-emitted stub
   // ends in IRETD (`66 CF`) so it can correctly unwind the 12-byte

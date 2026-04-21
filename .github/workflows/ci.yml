@@ -205,6 +205,18 @@ jobs:
           echo "$out" | grep -q 'child=ran'
           echo "$out" | grep -q 'spawn=ok'
 
+      - name: DPMI descriptor mgmt AX=0008/0009/000A/000B/000C
+        run: |
+          out=$(build/dosemu tests/DPMI_DESCMGMT.COM 2>/dev/null)
+          echo "dosemu output: $out"
+          echo "$out" | grep -q 'dpmi-descmgmt=ok'
+
+      - name: DPMI extra AX=0102/0305/0306/0801/0B00
+        run: |
+          out=$(build/dosemu tests/DPMI_EXTRA.COM 2>/dev/null)
+          echo "dosemu output: $out"
+          echo "$out" | grep -q 'dpmi-extra=ok'
+
       - name: DPMI stubs AX=0202/0203/0600/0601/0604/0800
         run: |
           # PM exception handler get/set (0202/0203, 32-entry table),
