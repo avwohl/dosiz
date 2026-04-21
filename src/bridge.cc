@@ -3336,7 +3336,9 @@ struct LeObject {
   uint32_t flags;           // copy of the object table's flags word
   uint32_t first_page;      // 1-based index of the object's first page
   uint32_t page_count;
-  uint16_t host_seg;        // our MCB seg where we placed the object data
+  uint32_t host_base;       // host linear address where we placed the object
+  uint16_t host_seg;        // for MCB-backed objects, the paragraph seg;
+                            // 0 if pm_arena-backed (look at host_base instead)
   bool     is_code;
   bool     is_big;          // 0x4000 "BIG" bit => 32-bit
 };
@@ -3428,24 +3430,43 @@ bool le_load_objects(const std::vector<uint8_t> &f, size_t le_off,
     const uint32_t page_count  = rdd(f, e + 0x10);
     o.first_page  = page_idx;
     o.page_count  = page_count;
-    // Allocate host memory (paragraphs) sized to cover virt_size.
+    // Allocate host memory sized to cover virt_size.  Small objects
+    // that fit in a paragraph-count fit the MCB arena (keeps them
+    // below 1MB, handy for future mixed 16-bit/32-bit object use).
+    // Anything bigger goes to pm_arena above 1MB.
     const uint32_t paras = (o.virt_size + 15u) / 16u;
-    if (paras == 0 || paras > 0xFFFFu) {
-      std::fprintf(stderr, "dosemu: LE obj %u paras=%u out of range\n",
-                   i + 1, paras);
+    if (paras == 0) {
+      std::fprintf(stderr, "dosemu: LE obj %u paras=0\n", i + 1);
       return false;
     }
-    uint16_t largest = 0;
-    const uint16_t seg = mcb_allocate(static_cast<uint16_t>(paras), largest);
-    if (seg == 0) {
-      std::fprintf(stderr, "dosemu: LE obj %u alloc of %u paras failed "
-                   "(largest free = %u)\n", i + 1, paras, largest);
-      return false;
+    o.host_seg  = 0;
+    o.host_base = 0;
+    if (paras <= 0xFFFFu) {
+      uint16_t largest = 0;
+      const uint16_t seg = mcb_allocate(
+          static_cast<uint16_t>(paras), largest);
+      if (seg != 0) {
+        o.host_seg  = seg;
+        o.host_base = static_cast<uint32_t>(seg) * 16u;
+      }
     }
-    o.host_seg = seg;
-    // Zero-fill (mcb_allocate leaves whatever was there).
-    for (uint32_t j = 0; j < paras * 16u; ++j)
-      mem_writeb(seg * 16u + j, 0);
+    if (o.host_base == 0) {
+      const uint32_t base = pm_alloc(o.virt_size);
+      if (base == 0) {
+        std::fprintf(stderr, "dosemu: LE obj %u: pm_alloc %u bytes failed\n",
+                     i + 1, o.virt_size);
+        return false;
+      }
+      o.host_base = base;
+    }
+    // Zero-fill.  mem_writeb is slow for large blocks; we accept that
+    // here because LE objects tend to have meaningful initialization
+    // data (BSS is uncommon) so in practice the copy loop below
+    // overwrites most bytes anyway.  Keep the explicit zero so
+    // uninitialized regions start cleanly rather than holding the
+    // previous allocation's bytes.
+    for (uint32_t j = 0; j < o.virt_size; ++j)
+      mem_writeb(o.host_base + j, 0);
     // Copy pages.
     for (uint32_t p = 0; p < page_count; ++p) {
       const uint32_t pt_entry_idx = page_idx - 1 + p;
@@ -3468,7 +3489,7 @@ bool le_load_objects(const std::vector<uint8_t> &f, size_t le_off,
         copy_bytes = o.virt_size - dst_off;
       for (uint32_t j = 0; j < copy_bytes; ++j) {
         if (file_pg_off + j >= f.size()) break;
-        mem_writeb(o.host_seg * 16u + dst_off + j, f[file_pg_off + j]);
+        mem_writeb(o.host_base + dst_off + j, f[file_pg_off + j]);
       }
     }
     objects.push_back(o);
@@ -3481,7 +3502,7 @@ bool le_load_objects(const std::vector<uint8_t> &f, size_t le_off,
 // land on the actual (post-load) location of their target object.  The
 // LE file expresses every reference as (source_type, target_obj_num,
 // target_offset) -- our job is to turn that into a concrete host
-// linear address host_seg[tgt] * 16 + target_offset.
+// linear address objects[tgt].host_base + target_offset.
 //
 // Supported source types (DPMI 0.9 LE section 7):
 //   0x02 16-bit selector           - stub: leaves zero (no PM sel yet)
@@ -3569,7 +3590,7 @@ bool le_apply_fixups(const std::vector<uint8_t> &f, size_t le_off,
         continue;
       }
       const LeObject &to = objects[tgt_obj - 1];
-      const uint32_t target_linear = to.host_seg * 16u + tgt_off;
+      const uint32_t target_linear = to.host_base + tgt_off;
 
       // Compute the source host address.
       const int32_t src_off_in_page = static_cast<int32_t>(src_off_s);
@@ -3581,7 +3602,7 @@ bool le_apply_fixups(const std::vector<uint8_t> &f, size_t le_off,
                      src_off_in_obj);
         continue;
       }
-      const uint32_t src_addr = src_obj->host_seg * 16u
+      const uint32_t src_addr = src_obj->host_base
                               + static_cast<uint32_t>(src_off_in_obj);
 
       auto patch8  = [&](uint32_t a, uint32_t v) { mem_writeb(a, v & 0xFF); };
@@ -3672,8 +3693,8 @@ bool load_exe_at(const std::string &path, uint16_t psp_seg, InitialRegs &out) {
         std::fprintf(stderr, "dosemu: LE objects loaded to host segments:\n");
         for (size_t i = 0; i < objects.size(); ++i) {
           std::fprintf(stderr,
-                       "  obj %zu: host_seg=0x%04x size=0x%x %s %s\n",
-                       i + 1, objects[i].host_seg, objects[i].virt_size,
+                       "  obj %zu: host=0x%08x size=0x%x %s %s\n",
+                       i + 1, objects[i].host_base, objects[i].virt_size,
                        objects[i].is_code ? "CODE" : "DATA",
                        objects[i].is_big ? "32-bit" : "16-bit");
         }
@@ -3681,12 +3702,15 @@ bool load_exe_at(const std::string &path, uint16_t psp_seg, InitialRegs &out) {
       }
       std::fprintf(stderr,
           "dosemu: %s is LE/LX -- pages copied + fixups applied into "
-          "MCB-allocated host segments, but executing still requires "
-          "PM-entry descriptor setup (follow-up work).\n",
+          "host memory (MCB for small objects, pm_arena above 1MB for "
+          "large), but executing still requires PM-entry descriptor "
+          "setup (follow-up work).\n",
           path.c_str());
       // Free objects we allocated -- caller doesn't know to.
-      for (auto &o : objects)
+      for (auto &o : objects) {
         if (o.host_seg) mcb_free(o.host_seg);
+        else if (o.host_base) pm_free(o.host_base);
+      }
       return false;
     }
   }
