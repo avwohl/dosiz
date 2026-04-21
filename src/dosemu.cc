@@ -84,11 +84,11 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  if (!dosemu::bridge::register_sections_and_run_startup()) return 1;
+  if (!dosemu::bridge::bring_up_emulator(cfg.headless, cfg.verbose)) return 1;
 
   std::fprintf(stderr,
-    "dosemu: startup seam verified; module activation / INT 21h handler\n"
-    "        / EXE loader not yet wired up.\n"
+    "dosemu: emulator brought up and torn down cleanly; INT 21h handler\n"
+    "        and EXE loader not yet wired up.\n"
     "        program=%s  args=%zu  headless=%d  machine=%s  cputype=%s  memsize=%d\n",
     cfg.program.c_str(), cfg.args.size(), cfg.headless ? 1 : 0,
     cfg.machine.c_str(), cfg.cputype.c_str(), cfg.memsize_mb);

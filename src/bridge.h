@@ -13,12 +13,11 @@ namespace dosemu::bridge {
 
 const char *dosbox_version();
 
-// Minimal in-process dosbox bring-up.  Instantiates CommandLine + Config,
-// calls DOSBOX_Init() to register the section hierarchy, overrides the
-// default startup function (SHELL_Init) with our own, and invokes
-// Config::StartUp() to demonstrate the seam fires.  Does NOT yet activate
-// modules (no CPU, memory, or device init).  Returns true on success.
-bool register_sections_and_run_startup();
+// Full in-process bring-up of dosbox-staging: registers sections, parses
+// config, initialises SDL, activates modules, and runs our startup hook
+// (instead of SHELL_Init).  verbose: 0=errors only, 1=warnings, 2=info.
+// Returns true on success.
+bool bring_up_emulator(bool headless, int verbose);
 
 } // namespace dosemu::bridge
 

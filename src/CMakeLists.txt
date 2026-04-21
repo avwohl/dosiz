@@ -47,7 +47,8 @@ add_executable(dosemu
 
 target_include_directories(dosemu PRIVATE
   ${DB}/include
-  ${DB_BUILD}          # for generated config.h
+  ${DB_BUILD}                    # generated config.h
+  ${DB}/src/libs/loguru          # loguru.hpp for verbosity control
   ${SDL2_INCLUDE_DIRS}
 )
 
