@@ -95,6 +95,13 @@ jobs:
           echo "dosemu output: $out"
           echo "$out" | grep -q 'hello from bcc'
 
+      - name: Real DOS-hosted Watcom tool (exe2bin.exe prints banner)
+        run: |
+          out=$(build/dosemu tests/EXE2BIN.EXE 2>/dev/null)
+          echo "dosemu output: $out"
+          # Real Open Watcom DOS-hosted binary from the official distribution.
+          echo "$out" | grep -q 'Open Watcom EXE to Binary Converter'
+
       - name: Real tool (FreeDOS xcopy.exe copies a file)
         run: |
           xcopy=dosbox-staging/build/resources/drives/y/dos/xcopy.exe

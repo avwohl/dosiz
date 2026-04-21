@@ -7,16 +7,22 @@ implementations running on the host. Same design as
 [cpmemu](https://github.com/avwohl/cpmemu), which does the equivalent for
 CP/M BDOS.
 
-**Status:** real DOS programs run. Real C compilers produce working binaries.
+**Status:** real DOS programs run. DOS-hosted toolchain binaries run.
+Cross-compiler-produced binaries run.
 
-	dosemu tests/HELLO_W.EXE              → hello from watcom   (Open Watcom 16-bit)
-	dosemu tests/HELLO_B.COM              → hello from bcc      (bcc 0.16.21)
-	echo F | dosemu xcopy.exe src dst     → copies src to dst   (FreeDOS xcopy)
-	dosemu mTCP-FTP.EXE                   → prints usage banner (mTCP, Watcom 16-bit)
+	dosemu tests/EXE2BIN.EXE              → Open Watcom banner   (real DOS-hosted)
+	dosemu tests/HELLO_W.EXE              → hello from watcom    (Watcom cross-compiled)
+	dosemu tests/HELLO_B.COM              → hello from bcc       (bcc cross-compiled)
+	echo F | dosemu xcopy.exe src dst     → copies src to dst    (FreeDOS xcopy)
+	dosemu mTCP-FTP.EXE                   → prints usage banner  (Open Watcom 16-bit, real DOS)
 
-32-bit Watcom (`owcc-dos4g` / DOS4GW) binaries currently fail with
-"Can't run DOS/4G(W)" at DPMI mode-switch time — DPMI stage 3+ work.
-See `.claude/.../dpmi_plan.md`.
+	dosemu owcc.exe hello.c               → owcc runs, fails invoking wcc.exe
+	                                        (wcc is LE/DPMI -- stage 3+ blocker)
+	dosemu HELLO32.EXE (DOS/4G bound)     → "Can't run DOS/4G(W)" at DPMI switch
+	                                        (stage 3+ blocker, DJGPP same problem)
+
+The 32-bit DOS/4G and DJGPP path is gated on DPMI stages 3-7.  See
+`.claude/.../dpmi_plan.md` for the staged implementation path.
 
 dosbox-staging is linked in-process for CPU + PC hardware. DOS INT 21h is
 handled entirely by C++ host code. Currently implemented:
