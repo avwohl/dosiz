@@ -1572,6 +1572,12 @@ Bitu dosemu_int31() {
       }
       s_pm_exc[reg_bl].sel = reg_cx;
       s_pm_exc[reg_bl].off = reg_edx;
+      // Also install the IDT gate so dosbox's CPU_Interrupt path
+      // actually dispatches exceptions to the client's handler.
+      // Gate bitness follows the caller's CS D-flag, matching the
+      // convention we use for AX=0205 (set PM IDT vector).
+      const bool bits32 = cpu.code.big;
+      write_idt_gate(reg_bl, reg_cx, reg_edx, bits32);
       set_cf(false);
       return CBRET_NONE;
     }

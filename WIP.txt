@@ -281,6 +281,8 @@ Fixture inventory (CI covers all these)
                                  address with full RM->PM->RM switch.
     DPMI_RMCB32.COM          -- Same, but 32-bit PM callback (8-byte
                                  RETF frame).
+    DPMI_EXC.COM             -- AX=0203 PM exception handler fires on
+                                 #UD, rewinds EIP, IRETs.
     HELLO_W.EXE              -- Open Watcom 16-bit hello (cross-compiled)
     HELLO_B.COM              -- bcc 0.16.21 hello (cross-compiled)
     EXE2BIN.EXE              -- real Open Watcom DOS-hosted utility

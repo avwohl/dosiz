@@ -205,6 +205,18 @@ jobs:
           echo "$out" | grep -q 'child=ran'
           echo "$out" | grep -q 'spawn=ok'
 
+      - name: DPMI AX=0203 PM exception handler actually dispatches
+        run: |
+          # Client installs a handler for #UD (vector 6) via AX=0203;
+          # executes UD2 (0F 0B).  Handler runs, rewinds stacked IP +2
+          # to skip UD2, sets fault_flag, IRETs.  Tests that our
+          # AX=0203 writes the IDT gate alongside the sel:off table,
+          # so dosbox's CPU_Interrupt path actually dispatches the
+          # exception to the client.
+          out=$(build/dosemu tests/DPMI_EXC.COM 2>/dev/null)
+          echo "dosemu output: $out"
+          echo "$out" | grep -q 'dpmi-exc=ok'
+
       - name: DPMI AX=0303/0304 real-mode callback (32-bit PM)
         run: |
           # Client allocates an LDT descriptor, AX=0007 sets its base to
