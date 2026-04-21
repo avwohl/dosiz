@@ -3339,6 +3339,8 @@ struct LeObject {
   uint32_t host_base;       // host linear address where we placed the object
   uint16_t host_seg;        // for MCB-backed objects, the paragraph seg;
                             // 0 if pm_arena-backed (look at host_base instead)
+  uint16_t ldt_sel;         // LDT selector installed by le_install_descriptors
+                            // (0 = not yet installed)
   bool     is_code;
   bool     is_big;          // 0x4000 "BIG" bit => 32-bit
 };
@@ -3662,6 +3664,45 @@ bool le_apply_fixups(const std::vector<uint8_t> &f, size_t le_off,
   return true;
 }
 
+// Install one LDT descriptor per LE object.  Base = host_base,
+// limit = virt_size - 1, access byte derived from object flags:
+//   code object (flag 0x0004) => 0x9A (present, DPL=0, code, readable)
+//   data object              => 0x92 (present, DPL=0, data, writable)
+// D-bit from BIG flag (0x4000) sets default operand size:
+//   16-bit object (BIG=0) => descriptor D=0
+//   32-bit object (BIG=1) => descriptor D=1
+// Writes the resulting selector back into o.ldt_sel.  Returns true
+// on success.  Caller is responsible for freeing the descriptors (via
+// the existing LDT bitmap machinery) if it tears the load down.
+bool le_install_descriptors(std::vector<LeObject> &objects) {
+  // Reuse the DPMI PM infrastructure: the LDT lives at LDT_SEG, the
+  // in-use bitmap tracks free slots, and write_ldt_descriptor writes
+  // the 8-byte descriptor with the right base/limit/access layout.
+  // This does *not* enter PM -- clients loading an LE that are going
+  // to execute in PM must do that separately.  The descriptors we
+  // install are valid for an already-running DPMI-style PM session.
+  const uint16_t need = static_cast<uint16_t>(objects.size());
+  const uint16_t start = ldt_find_run(need);
+  if (start == 0) {
+    std::fprintf(stderr, "dosemu: LE: no LDT run of %u descriptors\n", need);
+    return false;
+  }
+  for (uint16_t i = 0; i < need; ++i) {
+    auto &o = objects[i];
+    const uint16_t idx = start + i;
+    const uint8_t access = o.is_code ? 0x9A : 0x92;
+    const uint32_t limit = (o.virt_size > 0) ? (o.virt_size - 1) : 0;
+    write_ldt_descriptor(idx, o.host_base, limit, access, o.is_big);
+    ldt_set(idx, true);
+    o.ldt_sel = static_cast<uint16_t>((idx << 3) | 0x04 | 0x00);  // TI=1, RPL=0
+    std::fprintf(stderr,
+        "dosemu: LE obj %u: LDT slot %u sel=0x%04x base=0x%08x "
+        "limit=0x%x access=0x%02x D=%u\n",
+        i + 1, idx, o.ldt_sel, o.host_base, limit, access, o.is_big ? 1 : 0);
+  }
+  return true;
+}
+
 // Load an MZ .EXE at the given PSP segment (image goes at psp_seg + 0x10).
 bool load_exe_at(const std::string &path, uint16_t psp_seg, InitialRegs &out) {
   const uint16_t load_seg = psp_seg + 0x10;
@@ -3699,6 +3740,7 @@ bool load_exe_at(const std::string &path, uint16_t psp_seg, InitialRegs &out) {
                        objects[i].is_big ? "32-bit" : "16-bit");
         }
         le_apply_fixups(f, le_off, objects);
+        le_install_descriptors(objects);
       }
       std::fprintf(stderr,
           "dosemu: %s is LE/LX -- pages copied + fixups applied into "
@@ -3708,6 +3750,11 @@ bool load_exe_at(const std::string &path, uint16_t psp_seg, InitialRegs &out) {
           path.c_str());
       // Free objects we allocated -- caller doesn't know to.
       for (auto &o : objects) {
+        if (o.ldt_sel) {
+          const uint16_t idx = (o.ldt_sel >> 3);
+          write_ldt_descriptor(idx, 0, 0, 0);
+          ldt_set(idx, false);
+        }
         if (o.host_seg) mcb_free(o.host_seg);
         else if (o.host_base) pm_free(o.host_base);
       }
