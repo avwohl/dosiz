@@ -84,8 +84,18 @@ constexpr uint16_t ENV_SEG          = 0x0050;  // physical 0x500, start of DOS d
 constexpr uint32_t ENV_BYTES        = 0x0800;  // reserve 2KB -- fits average env
 
 // Initial register snapshot a loader returns to dosemu_startup.
+//
+// For .COM/.EXE the CS/SS are RM segments.  For LE the loader has
+// already installed LDT descriptors + prepared PM state; startup must
+// flip CR0.PE and treat cs/ss as LDT selectors and eip/esp as 32-bit.
 struct InitialRegs {
   uint16_t cs, ip, ss, sp, ax;
+  // LE-only:
+  bool     is_pm    = false;
+  bool     is_32bit = false;       // D-bit of entry CS descriptor
+  uint16_t pm_ds    = 0;           // auto-data selector
+  uint32_t pm_eip   = 0;
+  uint32_t pm_esp   = 0;
 };
 // Forward declaration: defined near end of file; needed by AH=4Bh
 // handler inside dosemu_int21.
@@ -832,94 +842,32 @@ void write_idt_gate(int idx, uint16_t sel, uint32_t off, bool bits32) {
   mem_writeb(p + 7, (off >> 24) & 0xFF);
 }
 
-Bitu dosemu_dpmi_entry() {
-  // Called via FAR CALL from real-mode DPMI clients after AX=1687h.
-  // Stack layout at entry:  [SP] = client IP, [SP+2] = client CS
-  // (the stub's CB is 'retf', so we must leave those words there -- but we
-  // overwrite CS with our PM code selector so retf takes us into PM).
-  //
-  // This is DPMI stage 3 -- mode switch only.  Stages 4-7 (LDT management,
-  // INT 21h reflection from PM, linear memory allocation) are not yet
-  // implemented, so most real DPMI clients (DJGPP, DOS4GW) will still fail
-  // at the first interrupt after the switch.  The switch itself is
-  // verifiable; what breaks after reveals the next piece to build.
-
-  const uint16_t client_cs = mem_readb(SegValue(ss) * 16u + reg_sp + 2)
-                           | (mem_readb(SegValue(ss) * 16u + reg_sp + 3) << 8);
-  // Client IP is the word below (unused here -- we don't relocate it).
-
-  // Build GDT: code, data, stack, es segments all cover the corresponding
-  // 64K real-mode arena.  Access byte 0x9A = present, DPL=0, code,
-  // readable; 0x92 = present, DPL=0, data, writable.
-  // AX on entry: 0 = 16-bit PM, 1 = 32-bit PM.  Everything else about the
-  // switch is identical except for the D flag on the code descriptor and
-  // the IDT gate type.
-  const bool bits32 = (reg_ax == 1);
-
+// Shared PM setup: build GDT, IDT, and CPU_LGDT/CPU_LIDT.  Caller
+// supplies the client's RM segment values so GDT[1..4] can alias them.
+// Used by both the DPMI entry (retf-into-PM path) and le_launch_pm
+// (no-caller path).  Caller is responsible for:
+//   - Resetting the LDT (if needed).
+//   - Flipping CR0.PE.
+//   - Issuing CPU_LLDT.
+//   - Loading segment selectors.
+void pm_setup_gdt_and_idt(bool bits32, uint16_t client_cs,
+                          uint16_t client_ds, uint16_t client_ss,
+                          uint16_t client_es) {
   write_gdt_descriptor(0, 0,              0,      0);                 // null
   write_gdt_descriptor(1, client_cs * 16, 0xFFFF, 0x9A, bits32);      // code
-  write_gdt_descriptor(2, SegValue(ds) * 16, 0xFFFF, 0x92);           // data
-  write_gdt_descriptor(3, SegValue(ss) * 16, 0xFFFF, 0x92);           // stack
-  write_gdt_descriptor(4, SegValue(es) * 16, 0xFFFF, 0x92);           // es
-  // Selector 0x28: code segment covering dosbox's callback area
-  // (CB_SEG=0xF000 -> base 0xF0000).  Always 16-bit: dosbox's callback
-  // stub emits 16-bit instructions (FB/CF/CB), so a 32-bit client's
-  // INT 21h hits a 16-bit compatibility sub-segment.
+  write_gdt_descriptor(2, client_ds * 16, 0xFFFF, 0x92);              // data
+  write_gdt_descriptor(3, client_ss * 16, 0xFFFF, 0x92);              // stack
+  write_gdt_descriptor(4, client_es * 16, 0xFFFF, 0x92);              // es
   write_gdt_descriptor(5, 0xF0000, 0xFFFF, 0x9A);                    // cb
-  // GDT[6] = LDT descriptor.  Access byte 0x82 = present, DPL=0, system,
-  // LDT type; granularity byte has D=0 (system descriptors ignore D but
-  // keep the nibble clean).
   write_gdt_descriptor(6, LDT_SEG * 16u, LDT_BYTES - 1, 0x82);
-  // GDT[7] = 32-bit reflection-shim code segment (always 16-bit CS --
-  // the shim bytes use 16-bit encodings with a `66` prefix to force
-  // IRETD).  Access byte 0x9A = present, DPL=0, code, readable.
   write_gdt_descriptor(7, PM_SHIM_SEG * 16u, PM_SHIM_TOTAL - 1, 0x9A);
-  // GDT[8] = PM scratch stack used when AX=0303 real-mode callbacks
-  // fire and we need to enter the client's PM callback procedure with
-  // a sane SS:SP.  4KB, data r/w.
   write_gdt_descriptor(8, PM_CB_STACK_SEG * 16u, PM_CB_STACK_SIZE - 1, 0x92);
-
-  // Zero the LDT so every unallocated slot reads as a not-present
-  // descriptor (access byte 0), then reset the in-use bitmap to match.
-  for (uint32_t off = 0; off < LDT_BYTES; ++off)
-    mem_writeb(LDT_SEG * 16u + off, 0);
-  for (auto &b : s_ldt_in_use) b = 0;
-  s_ldt_in_use[0] |= 0x01;   // slot 0 reserved (null)
-  for (auto &c : s_seg2desc_cache) c = 0;
-
   CPU_LGDT(GDT_LIMIT, GDT_SEG * 16u);
 
-  // Build IDT: zero all 256 entries, install INT 21h at the requested
-  // bitness.  CLI'd by the fixture/client -- other vectors would fault.
-  //
-  // The stub offset differs by bitness: the 16-bit stub ends in plain
-  // IRET (matches a 16-bit gate's 6-byte stack frame), the 32-bit stub
-  // ends in IRETD (matches a 32-bit gate's 12-byte frame).  Pointing a
-  // 32-bit gate at the 16-bit stub worked for the INT itself but faulted
-  // on the way out -- IRET popped CS from the high half of EIP (=0, the
-  // null descriptor).  Hence s_int21_cb32_off for 32-bit clients.
   const uint16_t int21_cb_off = bits32 ? s_int21_cb32_off : s_int21_cb_off;
   const uint16_t int31_cb_off = bits32 ? s_int31_cb32_off : s_int31_cb_off;
   for (int i = 0; i < 256; ++i) write_idt_gate(i, 0, 0, bits32);
 
-  // PM→RM reflection for un-installed vectors.
-  //
-  // 16-bit path: point the PM IDT gate directly at the RM stub in
-  // CB_SEG.  Its `CF` (16-bit IRET) correctly unwinds a 16-bit gate's
-  // 6-byte frame.
-  //
-  // 32-bit path: the same `CF` can't unwind a 32-bit gate's 12-byte
-  // frame, so we build a per-vector shim in PM_SHIM_SEG that re-does
-  // the native callback and ends in `66 CF` (IRETD).  The shim's CS
-  // (PM_SHIM_SEL) is 16-bit; the `66` prefix forces the trailing IRET
-  // to pop 32 bits.  cb_num comes from mining the `FE 38 LL HH` bytes
-  // inside the existing RM stub -- works because every dosbox callback
-  // type (CB_IRET, CB_INT21, CB_IRET_STI, etc.) includes that same
-  // 4-byte native-call invocation somewhere in its first handful of
-  // bytes, possibly preceded by a 1-byte `FB` (STI).
-  //
-  // INT 21h/31h keep their dedicated gates below, so we skip them.
-  // (CB_SEG is a dosbox macro = 0xF000.)
   for (int v = 0; v < 256; ++v) {
     if (v == 0x21 || v == 0x31) continue;
     const uint32_t ivt = mem_readd(static_cast<uint32_t>(v) * 4u);
@@ -930,8 +878,6 @@ Bitu dosemu_dpmi_entry() {
       write_idt_gate(v, PM_CB_SEL, off, false);
       continue;
     }
-    // 32-bit: scan the first 5 bytes of the stub for `FE 38` and copy
-    // the 2-byte cb_num that follows into our shim.
     const PhysPt stub = static_cast<PhysPt>(seg) * 16u + off;
     int scan = -1;
     for (int i = 0; i < 5; ++i) {
@@ -954,12 +900,42 @@ Bitu dosemu_dpmi_entry() {
     mem_writeb(shim + 7, 0x90);
     write_idt_gate(v, PM_SHIM_SEL, slot_off, true);
   }
-
   if (int21_cb_off)
     write_idt_gate(0x21, PM_CB_SEL, int21_cb_off, bits32);
   if (int31_cb_off)
     write_idt_gate(0x31, PM_CB_SEL, int31_cb_off, bits32);
   CPU_LIDT(IDT_LIMIT, IDT_SEG * 16u);
+}
+
+Bitu dosemu_dpmi_entry() {
+  // Called via FAR CALL from real-mode DPMI clients after AX=1687h.
+  // Stack layout at entry:  [SP] = client IP, [SP+2] = client CS
+  // (the stub's CB is 'retf', so we must leave those words there -- but we
+  // overwrite CS with our PM code selector so retf takes us into PM).
+  //
+  // This is DPMI stage 3 -- mode switch only.  Stages 4-7 (LDT management,
+  // INT 21h reflection from PM, linear memory allocation) are not yet
+  // implemented, so most real DPMI clients (DJGPP, DOS4GW) will still fail
+  // at the first interrupt after the switch.  The switch itself is
+  // verifiable; what breaks after reveals the next piece to build.
+
+  const uint16_t client_cs = mem_readb(SegValue(ss) * 16u + reg_sp + 2)
+                           | (mem_readb(SegValue(ss) * 16u + reg_sp + 3) << 8);
+  // Client IP is the word below (unused here -- we don't relocate it).
+
+  // AX on entry: 0 = 16-bit PM, 1 = 32-bit PM.
+  const bool bits32 = (reg_ax == 1);
+
+  pm_setup_gdt_and_idt(bits32, client_cs, SegValue(ds),
+                       SegValue(ss), SegValue(es));
+
+  // Zero the LDT so every unallocated slot reads as a not-present
+  // descriptor (access byte 0), then reset the in-use bitmap to match.
+  for (uint32_t off = 0; off < LDT_BYTES; ++off)
+    mem_writeb(LDT_SEG * 16u + off, 0);
+  for (auto &b : s_ldt_in_use) b = 0;
+  s_ldt_in_use[0] |= 0x01;   // slot 0 reserved (null)
+  for (auto &c : s_seg2desc_cache) c = 0;
 
   // Replace the stacked return-address CS with our PM code selector so the
   // stub's retf lands in PM rather than at an invalid real-mode segment.
