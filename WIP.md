@@ -248,21 +248,21 @@ Ordered roughly by leverage / difficulty:
    `objects[tgt_obj-1].ldt_sel` into the selector field instead of
    writing 0. Should unblock any real LE binary that uses far
    function pointers or vtables.
-2. **Make wd.exe survive its first interrupt.** Currently aborts
-   with `INT:Gate Selector points to illegal descriptor` ~0.3s
-   into PM execution.  Instrumented dosbox to print the vector:
-   `INT vector 0xd gate_sel=0x0` -- wd.exe GP-faults (#GP =
-   vector 0x0D) very early in entry, and our PM IDT has gate 0x0D
-   uninstalled, so the CPU can't even dispatch the exception.
-   Two pieces needed:
-     (a) Install PM IDT gates for exception vectors 0x00..0x1F that
-         point at a handler which logs + exits cleanly.
-     (b) Figure out what's GP-faulting.  Likely candidates: our
-         entry doesn't set FS/GS at all (they hold RM values which
-         are invalid PM selectors), doesn't provide a TSS, doesn't
-         set up a PSP or env block pointer in the usual Watcom
-         calling convention.  DOS4G/W's own RM stub does all of
-         this before entering PM; our LE entry is too naive.
+2. **Make wd.exe survive its first fault.** Catch-all exception
+   handler now installed for vectors 0x00..0x1F (commit 2087074):
+   client fault at `CS:EIP=0006f104` is reported cleanly instead
+   of dosbox E_Exit.  But the root cause of the fault is still
+   unclear.  Next steps:
+     (a) **Per-vector dispatch** so the handler knows which vector
+         fired.  Easy via PM_SHIM_SEG-style per-vector stubs that
+         pass the vector via an index.  Will also let the handler
+         parse the frame correctly (error-code vs no-error-code).
+     (b) **Root-cause the GP**.  Likely candidates: our entry
+         doesn't zero FS/GS (they hold stale RM values, invalid
+         as PM selectors), doesn't provide a TSS, doesn't set up
+         a PSP/env-block pointer in Watcom calling convention.
+         DOS4G/W's RM stub does all of this before PM entry;
+         our LE entry is too naive.
 3. **Cross-build a DJGPP tiny hello** (separate toolchain). Might
    give us a COFF-in-MZ path that's easier than LE for some
    targets.
@@ -337,6 +337,8 @@ External-tool integration:
 ## Commits since the original handoff (1222c44)
 
 ```
+2087074  LE: install catch-all exception handler for vectors 0x00..0x1F
+b593fa4  WIP.md: selector-bearing fixups landed; wd.exe diagnosis
 d21def3  LE loader: wire selector-bearing fixups + fix LE_MIN exit code
 62cd044  WIP.md: LE loader end-to-end, first PM execution landed
 48bc558  LE loader: end-to-end execution -- LE_MIN runs to exit
@@ -377,5 +379,5 @@ ffcdbff  DPMI stage 4 (subset): INT 31h AX=0400 + get/set segment base
 bfe1c76  DPMI stage 5 (32-bit): end-to-end fixture + IRETD callback stub
 ```
 
-37 commits from the session's start (`1222c44` "WIP.txt: handoff notes").
+38 commits from the session's start (`1222c44` "WIP.txt: handoff notes").
 All on main, all pushed.
