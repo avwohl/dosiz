@@ -266,6 +266,13 @@ Ordered roughly by leverage / difficulty:
    Next piece: replicate DOS4G's pre-entry environment setup,
    which is genuine DPMI-host scaffolding (PSP/env/arg pointers,
    fixed selectors for transfer buffer etc.).
+
+   Confirmed pattern: vi.exe (OW's vi, also LE CPU=2) fails with
+   the exact same AH=30h/AH=FFh/GP trace, confirming this is a
+   shared Watcom C runtime bring-up path, not a wd.exe-specific
+   bug.  Other ~/ow/binw binaries: pmodew.exe / pmwsetup.exe are
+   RM MZ stubs that print `Error Loading EXE!` when run bare;
+   wde.exe is a Windows 16-bit NE (not LE).
 3. **Cross-build a DJGPP tiny hello** (separate toolchain). Might
    give us a COFF-in-MZ path that's easier than LE for some
    targets.
@@ -340,6 +347,7 @@ External-tool integration:
 ## Commits since the original handoff (1222c44)
 
 ```
+c484c5e  WIP.md: set_cf fix landed; wd.exe next gap identified
 0b57f67  INT 21h/31h: fix set_cf frame offset for 32-bit gates
 3666d20  WIP.md: wd.exe next-failure instrumented
 d65a0c2  WIP.md: LE BIG bit fix + wd.exe next failure identified
@@ -389,5 +397,5 @@ ffcdbff  DPMI stage 4 (subset): INT 31h AX=0400 + get/set segment base
 bfe1c76  DPMI stage 5 (32-bit): end-to-end fixture + IRETD callback stub
 ```
 
-43 commits from the session's start (`1222c44` "WIP.txt: handoff notes").
+44 commits from the session's start (`1222c44` "WIP.txt: handoff notes").
 All on main, all pushed.
