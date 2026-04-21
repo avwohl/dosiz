@@ -368,6 +368,27 @@ jobs:
           echo "dosemu output: $out"
           echo "$out" | grep -q 'dpmi-stage6=ok'
 
+      - name: LE loader: regenerate + verify type-7 fixup walker
+        run: |
+          # Python generator emits a hand-crafted minimal LE binary with
+          # one code object, one data object, and a single type-7 (32-bit
+          # offset) internal-reference fixup pointing from obj1 into obj2.
+          # dosemu reports `LE fixup:` lines to stderr; we assert the
+          # fixup resolved to host_seg[obj2]*16 + 0, proving the walker
+          # read fixup_page_table + fixup_record_table correctly.
+          python3 tests/gen_le_min.py
+          out=$(build/dosemu tests/LE_MIN.EXE 2>&1)
+          echo "dosemu output:"
+          echo "$out"
+          echo "$out" | grep -q 'LE fixups applied: 1'
+          # Extract obj2's host_seg from the loader log, compute the
+          # expected target linear, and verify the fixup log names it.
+          seg2=$(echo "$out" | sed -n 's/.*obj 2: host_seg=0x\([0-9a-fA-F]\+\).*/\1/p')
+          test -n "$seg2"
+          expected=$(printf '0x%08x' $(( 0x$seg2 * 16 )))
+          echo "expected target linear: $expected"
+          echo "$out" | grep -q "type 0x07 -> obj2+0x0 = $expected"
+
       - name: Real compiler output (Open Watcom 16-bit hello)
         run: |
           out=$(build/dosemu tests/HELLO_W.EXE 2>/dev/null)

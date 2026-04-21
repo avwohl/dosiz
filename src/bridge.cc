@@ -3222,6 +3222,8 @@ struct LeObject {
   uint32_t virt_base;       // client-visible linear base from the LE header
   uint32_t virt_size;
   uint32_t flags;           // copy of the object table's flags word
+  uint32_t first_page;      // 1-based index of the object's first page
+  uint32_t page_count;
   uint16_t host_seg;        // our MCB seg where we placed the object data
   bool     is_code;
   bool     is_big;          // 0x4000 "BIG" bit => 32-bit
@@ -3312,6 +3314,8 @@ bool le_load_objects(const std::vector<uint8_t> &f, size_t le_off,
     o.is_big    = (o.flags & 0x4000) != 0;
     const uint32_t page_idx    = rdd(f, e + 0x0C);   // 1-based
     const uint32_t page_count  = rdd(f, e + 0x10);
+    o.first_page  = page_idx;
+    o.page_count  = page_count;
     // Allocate host memory (paragraphs) sized to cover virt_size.
     const uint32_t paras = (o.virt_size + 15u) / 16u;
     if (paras == 0 || paras > 0xFFFFu) {
@@ -3360,6 +3364,171 @@ bool le_load_objects(const std::vector<uint8_t> &f, size_t le_off,
   return true;
 }
 
+// Walk the fixup-page-table + fixup-record-table and patch source
+// offsets inside each object's host memory so that internal references
+// land on the actual (post-load) location of their target object.  The
+// LE file expresses every reference as (source_type, target_obj_num,
+// target_offset) -- our job is to turn that into a concrete host
+// linear address host_seg[tgt] * 16 + target_offset.
+//
+// Supported source types (DPMI 0.9 LE section 7):
+//   0x02 16-bit selector           - stub: leaves zero (no PM sel yet)
+//   0x05 16-bit offset             - low 16 bits of target linear
+//   0x06 16:32 pointer             - selector stub + 32-bit offset
+//   0x07 32-bit offset             - full 32-bit target linear
+//   0x08 32-bit self-relative      - target_linear - (src_addr + 4)
+// Target reference types supported:
+//   0b00 internal reference (everything we need for no-imports LE)
+// Unsupported (logged + skipped): imported-by-ordinal, by-name, and
+// entry-table targets.  Those require imports the mini-loader doesn't
+// plan to grow.
+bool le_apply_fixups(const std::vector<uint8_t> &f, size_t le_off,
+                     const std::vector<LeObject> &objects) {
+  const uint32_t num_pages      = rdd(f, le_off + 0x14);
+  const uint32_t page_size      = rdd(f, le_off + 0x28);
+  const uint32_t fixup_page_tbl = rdd(f, le_off + 0x68);
+  const uint32_t fixup_rec_tbl  = rdd(f, le_off + 0x6C);
+  if (fixup_page_tbl == 0 || fixup_rec_tbl == 0 || num_pages == 0)
+    return true;  // nothing to do
+
+  auto find_obj_for_page = [&](uint32_t page_1based) -> const LeObject * {
+    for (const auto &o : objects)
+      if (page_1based >= o.first_page
+          && page_1based < o.first_page + o.page_count)
+        return &o;
+    return nullptr;
+  };
+
+  uint32_t total_fixups = 0;
+  for (uint32_t pg = 0; pg < num_pages; ++pg) {
+    const size_t pt_entry = le_off + fixup_page_tbl + pg * 4;
+    const size_t pt_next  = le_off + fixup_page_tbl + (pg + 1) * 4;
+    if (pt_next + 4 > f.size()) return false;
+    const uint32_t rec_start = rdd(f, pt_entry);
+    const uint32_t rec_end   = rdd(f, pt_next);
+    if (rec_end < rec_start) return false;
+    if (rec_start == rec_end) continue;  // no fixups on this page
+
+    const uint32_t page_1based = pg + 1;
+    const LeObject *src_obj = find_obj_for_page(page_1based);
+    if (!src_obj) {
+      std::fprintf(stderr, "dosemu: LE fixup: page %u has no owning object\n",
+                   page_1based);
+      continue;
+    }
+    const uint32_t page_off_in_obj =
+        (page_1based - src_obj->first_page) * page_size;
+
+    size_t p = le_off + fixup_rec_tbl + rec_start;
+    const size_t p_end = le_off + fixup_rec_tbl + rec_end;
+    while (p + 5 <= p_end && p + 5 <= f.size()) {
+      const uint8_t  src_type   = f[p + 0];
+      const uint8_t  tgt_flags  = f[p + 1];
+      const int16_t  src_off_s  = static_cast<int16_t>(rdw(f, p + 2));
+      p += 4;
+      const uint8_t  ref_type   = tgt_flags & 0x03;
+      const bool     f_16obj    = (tgt_flags & 0x40) != 0;
+      const bool     f_32toff   = (tgt_flags & 0x10) != 0;
+
+      if (ref_type != 0x00) {
+        // Skip imports / entry-table targets.  Parse just enough to
+        // advance past them; for our minimal fixture they never occur.
+        std::fprintf(stderr, "dosemu: LE fixup: ref_type %u (imports) "
+                     "not supported, skipping record\n", ref_type);
+        return false;
+      }
+
+      if (p >= f.size()) return false;
+      uint32_t tgt_obj;
+      if (f_16obj) { tgt_obj = rdw(f, p); p += 2; }
+      else         { tgt_obj = f[p];      p += 1; }
+
+      uint32_t tgt_off = 0;
+      // type 2 (16-bit selector) has no target offset in the record.
+      if ((src_type & 0x0F) != 0x02) {
+        if (f_32toff) { if (p + 4 > f.size()) return false;
+                        tgt_off = rdd(f, p); p += 4; }
+        else          { if (p + 2 > f.size()) return false;
+                        tgt_off = rdw(f, p); p += 2; }
+      }
+
+      if (tgt_obj == 0 || tgt_obj > objects.size()) {
+        std::fprintf(stderr, "dosemu: LE fixup: bad target obj %u\n", tgt_obj);
+        continue;
+      }
+      const LeObject &to = objects[tgt_obj - 1];
+      const uint32_t target_linear = to.host_seg * 16u + tgt_off;
+
+      // Compute the source host address.
+      const int32_t src_off_in_page = static_cast<int32_t>(src_off_s);
+      const int32_t src_off_in_obj  = static_cast<int32_t>(page_off_in_obj)
+                                    + src_off_in_page;
+      if (src_off_in_obj < 0
+          || static_cast<uint32_t>(src_off_in_obj) >= src_obj->virt_size) {
+        std::fprintf(stderr, "dosemu: LE fixup: src off 0x%x outside obj\n",
+                     src_off_in_obj);
+        continue;
+      }
+      const uint32_t src_addr = src_obj->host_seg * 16u
+                              + static_cast<uint32_t>(src_off_in_obj);
+
+      auto patch8  = [&](uint32_t a, uint32_t v) { mem_writeb(a, v & 0xFF); };
+      auto patch16 = [&](uint32_t a, uint32_t v) {
+        patch8(a, v); patch8(a + 1, v >> 8);
+      };
+      auto patch32 = [&](uint32_t a, uint32_t v) {
+        patch16(a, v); patch16(a + 2, v >> 16);
+      };
+
+      const uint8_t s = src_type & 0x0F;
+      switch (s) {
+        case 0x05:  // 16-bit offset
+          patch16(src_addr, target_linear);
+          break;
+        case 0x07:  // 32-bit offset
+          patch32(src_addr, target_linear);
+          break;
+        case 0x08: {  // 32-bit self-relative
+          const uint32_t rel = target_linear - (src_addr + 4);
+          patch32(src_addr, rel);
+          break;
+        }
+        case 0x02:  // 16-bit selector stub
+          patch16(src_addr, 0);
+          std::fprintf(stderr, "dosemu: LE fixup: 16-bit selector stub "
+                       "at 0x%x -> obj%u (no LDT descriptor yet)\n",
+                       src_addr, tgt_obj);
+          break;
+        case 0x06:  // 16:32 pointer: 16-bit selector + 32-bit offset
+          patch32(src_addr, target_linear);
+          patch16(src_addr + 4, 0);
+          std::fprintf(stderr, "dosemu: LE fixup: 16:32 selector stub\n");
+          break;
+        case 0x03:  // 16:16 pointer
+          patch16(src_addr, target_linear);
+          patch16(src_addr + 2, 0);
+          std::fprintf(stderr, "dosemu: LE fixup: 16:16 selector stub\n");
+          break;
+        case 0x00:  // byte fixup
+          patch8(src_addr, target_linear);
+          break;
+        default:
+          std::fprintf(stderr, "dosemu: LE fixup: unhandled src_type 0x%02x\n",
+                       src_type);
+          break;
+      }
+      std::fprintf(stderr,
+          "dosemu: LE fixup: page %u off 0x%04x type 0x%02x -> "
+          "obj%u+0x%x = 0x%08x (at host 0x%05x)\n",
+          page_1based, src_off_s & 0xFFFF, src_type,
+          tgt_obj, tgt_off, target_linear, src_addr);
+      ++total_fixups;
+    }
+  }
+  std::fprintf(stderr, "dosemu: LE fixups applied: %u\n", total_fixups);
+  return true;
+}
+
 // Load an MZ .EXE at the given PSP segment (image goes at psp_seg + 0x10).
 bool load_exe_at(const std::string &path, uint16_t psp_seg, InitialRegs &out) {
   const uint16_t load_seg = psp_seg + 0x10;
@@ -3396,11 +3565,12 @@ bool load_exe_at(const std::string &path, uint16_t psp_seg, InitialRegs &out) {
                        objects[i].is_code ? "CODE" : "DATA",
                        objects[i].is_big ? "32-bit" : "16-bit");
         }
+        le_apply_fixups(f, le_off, objects);
       }
       std::fprintf(stderr,
-          "dosemu: %s is LE/LX -- pages copied into MCB-allocated host "
-          "segments, but executing still requires fixup pass + PM-entry "
-          "descriptor setup (follow-up work).\n",
+          "dosemu: %s is LE/LX -- pages copied + fixups applied into "
+          "MCB-allocated host segments, but executing still requires "
+          "PM-entry descriptor setup (follow-up work).\n",
           path.c_str());
       // Free objects we allocated -- caller doesn't know to.
       for (auto &o : objects)
