@@ -258,6 +258,8 @@ Fixture inventory (CI covers all these)
                                  Far Return.  Bundles its own RM
                                  routine (`mov ax,0x1234; retf`)
                                  inside the .COM.
+    DPMI_CALLRMI.COM         -- AX=0302 Call Real Mode Procedure With
+                                 IRET Frame.  `mov ax,0x5678; iret`.
     HELLO_W.EXE              -- Open Watcom 16-bit hello (cross-compiled)
     HELLO_B.COM              -- bcc 0.16.21 hello (cross-compiled)
     EXE2BIN.EXE              -- real Open Watcom DOS-hosted utility

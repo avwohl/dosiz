@@ -163,6 +163,17 @@ jobs:
           echo "dosemu output: $out"
           echo "$out" | grep -q 'dpmi-integration=ok'
 
+      - name: DPMI AX=0302: Call Real Mode Procedure With IRET Frame
+        run: |
+          # Same mode-switch as 0300/0301 but pushes an IRET frame
+          # (IP, CS, FLAGS) pointing at a host "stop" callback before
+          # jumping to the client's procedure.  The procedure's IRET
+          # lands on the stop callback's FE 38 stub which returns
+          # CBRET_STOP, unwinding the nested DOSBOX_RunMachine.
+          out=$(build/dosemu tests/DPMI_CALLRMI.COM 2>/dev/null)
+          echo "dosemu output: $out"
+          echo "$out" | grep -q 'dpmi-callrmi=ok'
+
       - name: DPMI AX=0301: Call Real Mode Procedure With Far Return
         run: |
           # Same mode-switch machinery as AX=0300, but the RM dispatcher

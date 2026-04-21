@@ -952,6 +952,14 @@ Bitu dosemu_int16() {
   }
 }
 
+// AX=0302 pushes an IRET frame pointing at this stop callback before
+// transferring control to the client's real-mode procedure.  When the
+// procedure IRETs it pops IP:CS:FLAGS back onto our stub; the FE 38
+// native dispatch below returns CBRET_STOP which unwinds the nested
+// DOSBOX_RunMachine, handing control back to the AX=0302 handler.
+Bitu dosemu_rm_stop() { return CBRET_STOP; }
+RealPt s_rm_stop_ptr = 0;
+
 // INT 31h (DPMI) — stage 4 subset.
 //
 //   AX=0400  Get DPMI version.
@@ -1261,6 +1269,135 @@ Bitu dosemu_int31() {
         set_cf(true);
         return CBRET_NONE;
       }
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
+    case 0x0302: {  // Call Real Mode Procedure With IRET Frame
+      // Same mode-switch machinery as 0300/0301; the difference is
+      // how we enter the RM procedure:
+      //   - 0301 pushes a far return (CS:IP) and the callee RETFs.
+      //   - 0302 pushes an IRET frame (FLAGS:CS:IP) and the callee
+      //     IRETs.
+      // We inline the RunMachine call (rather than reusing
+      // CALLBACK_RunRealFar) so we can push the extra FLAGS word
+      // above CS:IP.  Target is struct.CS:IP; the pushed return
+      // address points at our rm_stop callback.
+      const PhysPt rmcs = SegPhys(es) + reg_edi;
+
+      const uint32_t saved_cr0  = cpu.cr0;
+      const uint16_t saved_cs   = SegValue(cs);
+      const uint16_t saved_ds   = SegValue(ds);
+      const uint16_t saved_ss   = SegValue(ss);
+      const uint16_t saved_es   = SegValue(es);
+      const uint16_t saved_fs   = SegValue(fs);
+      const uint16_t saved_gs   = SegValue(gs);
+      const uint32_t saved_esp  = reg_esp;
+      const uint32_t saved_ebp  = reg_ebp;
+      const uint32_t saved_eax  = reg_eax;
+      const uint32_t saved_ebx  = reg_ebx;
+      const uint32_t saved_ecx  = reg_ecx;
+      const uint32_t saved_edx  = reg_edx;
+      const uint32_t saved_esi  = reg_esi;
+      const uint32_t saved_edi  = reg_edi;
+
+      const uint32_t s_edi = mem_readd(rmcs + 0x00);
+      const uint32_t s_esi = mem_readd(rmcs + 0x04);
+      const uint32_t s_ebp = mem_readd(rmcs + 0x08);
+      const uint32_t s_ebx = mem_readd(rmcs + 0x10);
+      const uint32_t s_edx = mem_readd(rmcs + 0x14);
+      const uint32_t s_ecx = mem_readd(rmcs + 0x18);
+      const uint32_t s_eax = mem_readd(rmcs + 0x1C);
+      const uint16_t s_flags_in = mem_readw(rmcs + 0x20);
+      const uint16_t s_es  = mem_readw(rmcs + 0x22);
+      const uint16_t s_ds  = mem_readw(rmcs + 0x24);
+      const uint16_t s_fs  = mem_readw(rmcs + 0x26);
+      const uint16_t s_gs  = mem_readw(rmcs + 0x28);
+      const uint16_t s_ip  = mem_readw(rmcs + 0x2A);
+      const uint16_t s_cs  = mem_readw(rmcs + 0x2C);
+      const uint16_t s_sp  = mem_readw(rmcs + 0x2E);
+      const uint16_t s_ss  = mem_readw(rmcs + 0x30);
+
+      const Bitu saved_idt_base  = CPU_SIDT_base();
+      const Bitu saved_idt_limit = CPU_SIDT_limit();
+      CPU_LIDT(0x3FF, 0);
+
+      CPU_SET_CRX(0, saved_cr0 & ~1u);
+
+      reg_eax = s_eax; reg_ebx = s_ebx; reg_ecx = s_ecx; reg_edx = s_edx;
+      reg_esi = s_esi; reg_edi = s_edi; reg_ebp = s_ebp;
+      SegSet16(ds, s_ds); SegSet16(es, s_es);
+      SegSet16(fs, s_fs); SegSet16(gs, s_gs);
+      if (s_ss != 0) {
+        SegSet16(ss, s_ss);
+        reg_esp = s_sp;
+      } else {
+        SegSet16(ss, 0x0050);
+        reg_esp = 0x0F00;
+      }
+
+      // Push the IRET frame for our stop callback onto the RM stack:
+      //   [SS:SP+0] = IP of stop callback
+      //   [SS:SP+2] = CS of stop callback
+      //   [SS:SP+4] = FLAGS to give the callee on entry
+      reg_esp = (reg_esp - 6) & 0xFFFF;
+      real_writew(SegValue(ss), reg_sp + 0,
+                  static_cast<uint16_t>(s_rm_stop_ptr & 0xFFFF));
+      real_writew(SegValue(ss), reg_sp + 2,
+                  static_cast<uint16_t>((s_rm_stop_ptr >> 16) & 0xFFFF));
+      real_writew(SegValue(ss), reg_sp + 4, s_flags_in);
+
+      // Jump to the client's procedure and let the nested machine run.
+      reg_eip = s_ip;
+      SegSet16(cs, s_cs);
+      DOSBOX_RunMachine();
+
+      const uint32_t r_eax = reg_eax;
+      const uint32_t r_ebx = reg_ebx;
+      const uint32_t r_ecx = reg_ecx;
+      const uint32_t r_edx = reg_edx;
+      const uint32_t r_esi = reg_esi;
+      const uint32_t r_edi = reg_edi;
+      const uint32_t r_ebp = reg_ebp;
+      const uint16_t r_flags = static_cast<uint16_t>(reg_flags & 0xFFFF);
+      const uint16_t r_es = SegValue(es);
+      const uint16_t r_ds = SegValue(ds);
+      const uint16_t r_fs = SegValue(fs);
+      const uint16_t r_gs = SegValue(gs);
+
+      CPU_SET_CRX(0, saved_cr0);
+      CPU_LIDT(saved_idt_limit, saved_idt_base);
+
+      CPU_SetSegGeneral(ds, saved_ds);
+      CPU_SetSegGeneral(ss, saved_ss);
+      CPU_SetSegGeneral(es, saved_es);
+      CPU_SetSegGeneral(fs, saved_fs);
+      CPU_SetSegGeneral(gs, saved_gs);
+      {
+        Descriptor cs_desc;
+        cpu.gdt.GetDescriptor(saved_cs, cs_desc);
+        Segs.val[cs]  = saved_cs;
+        Segs.phys[cs] = cs_desc.GetBase();
+      }
+
+      reg_eax = saved_eax; reg_ebx = saved_ebx;
+      reg_ecx = saved_ecx; reg_edx = saved_edx;
+      reg_esi = saved_esi; reg_edi = saved_edi;
+      reg_ebp = saved_ebp; reg_esp = saved_esp;
+
+      mem_writed(rmcs + 0x00, r_edi);
+      mem_writed(rmcs + 0x04, r_esi);
+      mem_writed(rmcs + 0x08, r_ebp);
+      mem_writed(rmcs + 0x10, r_ebx);
+      mem_writed(rmcs + 0x14, r_edx);
+      mem_writed(rmcs + 0x18, r_ecx);
+      mem_writed(rmcs + 0x1C, r_eax);
+      mem_writew(rmcs + 0x20, r_flags);
+      mem_writew(rmcs + 0x22, r_es);
+      mem_writew(rmcs + 0x24, r_ds);
+      mem_writew(rmcs + 0x26, r_fs);
+      mem_writew(rmcs + 0x28, r_gs);
+
       set_cf(false);
       return CBRET_NONE;
     }
@@ -2422,6 +2559,17 @@ void dosemu_startup() {
     s_int21_cb_seg = static_cast<uint16_t>((rp >> 16) & 0xFFFF);
     s_int21_cb_off = static_cast<uint16_t>(rp & 0xFFFF);
   }
+
+  // "Stop" callback for AX=0302: a no-op native handler whose only
+  // purpose is to be an IRET target the mode-switch dispatcher pushes
+  // on the RM stack before jumping to the client's procedure.  When
+  // the procedure IRETs, the CPU lands at this callback's stub (FE 38
+  // ... CF) whose native dispatch returns CBRET_STOP -- the same
+  // "unwind the nested RunMachine" signal CALLBACK_RunRealInt/Far
+  // uses internally.
+  CALLBACK_HandlerObject rm_stop_cb;
+  rm_stop_cb.Install(&dosemu_rm_stop, CB_IRET, "dosemu RM stop (AX=0302)");
+  s_rm_stop_ptr = rm_stop_cb.Get_RealPointer();
 
   // Second callback: same native handler, but the dosbox-emitted stub
   // ends in IRETD (`66 CF`) so it can correctly unwind the 12-byte
