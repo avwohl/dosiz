@@ -69,13 +69,13 @@ jobs:
           echo "dosemu output: $out"
           echo "$out" | grep -q 'alloc-free-alloc-same'
 
-      - name: DPMI stage 2: detection reports present
+      - name: "DPMI stage 2: detection reports present"
         run: |
           out=$(build/dosemu tests/DPMI_PROBE.COM 2>/dev/null)
           echo "dosemu output: $out"
           echo "$out" | grep -q 'dpmi=present'
 
-      - name: DPMI stage 5: INT 21h from protected mode reflected to host
+      - name: "DPMI stage 5: INT 21h from protected mode reflected to host"
         run: |
           # PM client does INT 21h AH=09 (print) then AH=4Ch (exit).  Both
           # go through our IDT gate -> dosbox's CB_INT21 callback path ->
@@ -85,7 +85,7 @@ jobs:
           echo "dosemu output: $out"
           echo "$out" | grep -q 'dpmi-stage5=hello-from-pm'
 
-      - name: DPMI stage 5 (32-bit PM): INT 21h from 32-bit client reflects
+      - name: "DPMI stage 5 (32-bit PM): INT 21h from 32-bit client reflects"
         run: |
           # Same flow as the 16-bit fixture, but the client entered PM with
           # AX=1 so CS has D=1 and the IDT gate is a 32-bit interrupt gate.
@@ -105,7 +105,7 @@ jobs:
           echo "dosemu output: $out"
           echo "$out" | grep -q 'int31=denied'
 
-      - name: DPMI stage 4: INT 31h version + seg base get/set from PM
+      - name: "DPMI stage 4: INT 31h version + seg base get/set from PM"
         run: |
           # Enters 16-bit PM, then exercises INT 31h via the PM IDT gate:
           #   AX=0400 Get DPMI version
@@ -117,7 +117,7 @@ jobs:
           echo "dosemu output: $out"
           echo "$out" | grep -q 'dpmi-stage4=ok'
 
-      - name: DPMI stage 4b: LDT descriptor alloc/free/convert
+      - name: "DPMI stage 4b: LDT descriptor alloc/free/convert"
         run: |
           # Exercises INT 31h AX=0000 (alloc N LDT descriptors),
           # AX=0001 (free), AX=0002 (segment-to-descriptor, repeat-call
@@ -129,7 +129,7 @@ jobs:
           echo "dosemu output: $out"
           echo "$out" | grep -q 'dpmi-stage4b=ok'
 
-      - name: DPMI stage 4c: IVT read/write + free memory info
+      - name: "DPMI stage 4c: IVT read/write + free memory info"
         run: |
           # AX=0204/0205 read/write the real-mode IVT through the DPMI
           # host; AX=0500 fills a 0x30-byte buffer with memory info
@@ -140,7 +140,7 @@ jobs:
           echo "dosemu output: $out"
           echo "$out" | grep -q 'dpmi-stage4c=ok'
 
-      - name: DPMI reflection: INT 10h AH=0F from 16-bit PM reaches BIOS
+      - name: "DPMI reflection: INT 10h AH=0F from 16-bit PM reaches BIOS"
         run: |
           # Un-installed PM IDT vectors used to fault with "INT:Gate
           # Selector points to illegal descriptor with type 0x0".  Our
@@ -153,7 +153,7 @@ jobs:
           echo "dosemu output: $out"
           echo "$out" | grep -q 'dpmi-reflect=ok'
 
-      - name: DPMI integration: chain stages 2-6 + reflection in 32-bit PM
+      - name: "DPMI integration: chain stages 2-6 + reflection in 32-bit PM"
         run: |
           # Hand-assembled "realistic client" in 32-bit PM: detect DPMI,
           # switch, AX=0400/0003/0000/0501/0007 (version/incr/LDT-alloc/
@@ -167,7 +167,7 @@ jobs:
           echo "dosemu output: $out"
           echo "$out" | grep -q 'dpmi-integration=ok'
 
-      - name: AH=4Bh + AH=4Dh: 3-level nesting (grand -> middle -> child)
+      - name: "AH=4Bh + AH=4Dh: 3-level nesting (grand -> middle -> child)"
         run: |
           # GRAND spawns MIDDLE (which spawns CHILD).  Each parent
           # verifies the child's exit code via AH=4Dh before exiting
@@ -185,7 +185,7 @@ jobs:
           echo "$out" | grep -q 'middle=ok'
           echo "$out" | grep -q 'grand=ok'
 
-      - name: AH=4Bh AL=1 load-without-execute returns CS:IP + SS:SP
+      - name: "AH=4Bh AL=1 load-without-execute returns CS:IP + SS:SP"
         run: |
           workdir=$(mktemp -d)
           cp tests/CHILD.COM tests/SPAWN_AL1.COM "$workdir/"
@@ -290,7 +290,7 @@ jobs:
           echo "dosemu output: $out"
           echo "$out" | grep -q 'dpmi-pmidt=ok'
 
-      - name: DPMI AX=0100/0101: DOS memory alloc/free (hybrid RM+PM)
+      - name: "DPMI AX=0100/0101: DOS memory alloc/free (hybrid RM+PM)"
         run: |
           # AX=0100 allocates via the MCB chain and pairs the result
           # with a fresh LDT selector whose descriptor aliases the MCB
@@ -302,7 +302,7 @@ jobs:
           echo "dosemu output: $out"
           echo "$out" | grep -q 'dpmi-dosmem=ok'
 
-      - name: DPMI AX=0302: Call Real Mode Procedure With IRET Frame
+      - name: "DPMI AX=0302: Call Real Mode Procedure With IRET Frame"
         run: |
           # Same mode-switch as 0300/0301 but pushes an IRET frame
           # (IP, CS, FLAGS) pointing at a host "stop" callback before
@@ -313,7 +313,7 @@ jobs:
           echo "dosemu output: $out"
           echo "$out" | grep -q 'dpmi-callrmi=ok'
 
-      - name: DPMI AX=0301: Call Real Mode Procedure With Far Return
+      - name: "DPMI AX=0301: Call Real Mode Procedure With Far Return"
         run: |
           # Same mode-switch machinery as AX=0300, but the RM dispatcher
           # is CALLBACK_RunRealFar(cs, ip) instead of
@@ -324,7 +324,7 @@ jobs:
           echo "dosemu output: $out"
           echo "$out" | grep -q 'dpmi-callrm=ok'
 
-      - name: DPMI AX=0300: Simulate Real Mode Interrupt
+      - name: "DPMI AX=0300: Simulate Real Mode Interrupt"
         run: |
           # Full mode-switch round-trip: save PM state, swap IDTR to
           # the RM IVT (ours points at the PM IDT -- left loaded, the
@@ -339,7 +339,7 @@ jobs:
           echo "dosemu output: $out"
           echo "$out" | grep -q 'dpmi-simrm=ok'
 
-      - name: DPMI stage 6b: AX=0503 resize memory block (shrink + grow)
+      - name: "DPMI stage 6b: AX=0503 resize memory block (shrink + grow)"
         run: |
           # Alloc 256 bytes, shrink to 64 (in-place split), grow back to
           # 128 (reclaims the freshly-split free tail).  AX=0503 returns
@@ -349,7 +349,7 @@ jobs:
           echo "dosemu output: $out"
           echo "$out" | grep -q 'dpmi-stage6b=ok'
 
-      - name: DPMI reflection (32-bit): INT 10h AH=0F from 32-bit PM
+      - name: "DPMI reflection (32-bit): INT 10h AH=0F from 32-bit PM"
         run: |
           # Same as DPMI_REFLECT.COM but enters PM with AX=1 (32-bit).
           # The 32-bit gate pushes a 12-byte frame that plain `CF` (16-bit
@@ -361,7 +361,7 @@ jobs:
           echo "dosemu output: $out"
           echo "$out" | grep -q 'dpmi-reflect32=ok'
 
-      - name: DPMI stage 6: alloc, write/read round-trip, free
+      - name: "DPMI stage 6: alloc, write/read round-trip, free"
         run: |
           # INT 31h AX=0501 allocates 256 bytes from the MCB arena and
           # returns BX:CX = linear address + SI:DI = handle.  The fixture
@@ -396,7 +396,7 @@ jobs:
           echo "dosemu output: $out"
           echo "$out" | grep -q 'dpmi-v10=ok'
 
-      - name: DPMI AX=0501: pm_arena tier (>1MB allocation above 1MB)
+      - name: "DPMI AX=0501: pm_arena tier (>1MB allocation above 1MB)"
         run: |
           # Requesting >0xFFFFh paragraphs can't fit the MCB arena, so
           # dosemu's AX=0501 handler falls back to pm_alloc in the
@@ -410,7 +410,7 @@ jobs:
           echo "dosemu output: $out"
           echo "$out" | grep -q 'dpmi-pmalloc=ok'
 
-      - name: LE loader: regenerate + verify fixup walker
+      - name: "LE loader: regenerate + verify fixup walker"
         run: |
           # Python generator emits a hand-crafted minimal LE binary with
           # one code object, one data object, and a single type-7 (32-bit
@@ -623,7 +623,7 @@ jobs:
           echo "out: $(printf '%q' "$out")"
           printf '%s' "$out" | grep -qU $'line1\r' || { echo "FAIL"; exit 1; }
 
-      - name: Smoke (env block at PSP:2Ch)
+      - name: "Smoke (env block at PSP:2Ch)"
         run: |
           out=$(build/dosemu tests/ENVDUMP.COM 2>/dev/null)
           echo "dosemu output: $out"
