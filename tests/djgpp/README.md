@@ -58,3 +58,6 @@ make                    # build dosemu if not already
 | CAT         | real GNU cat (txt20b) — std-handle lseek/fstat regression gate |
 | SED         | real GNU sed 4.8 (sed48b) — regex substitution             |
 | SORT        | real GNU sort (txt20b) — buffered I/O + qsort              |
+| WC          | real GNU wc (txt20b) — simple line count                   |
+| GAWK        | real GNU gawk 5.0 (gwk500b) — regex/field-split engine     |
+| GZIP        | real GNU gzip 1.10 (gzip110b) — binary round-trip gate     |

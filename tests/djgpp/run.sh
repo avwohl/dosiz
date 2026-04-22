@@ -195,6 +195,58 @@ else
     fail=$((fail + 1))
 fi
 
+# GNU wc (coreutils / txt20b).  `wc -l input.txt` on a 4-line file.
+wdir=$(mktemp -d)
+cp build/dosemu tests/WC.EXE "$wdir/"
+printf "one\ntwo\nthree\nfour\n" > "$wdir/in.txt"
+(cd "$wdir" && DOSEMU_DPMI_RING3=1 ./dosemu WC.EXE -l in.txt 2>/dev/null) > "$wdir/out" && wrc=$? || wrc=$?
+wgot=$(tr -d '\r' < "$wdir/out" | tr -s ' ')
+rm -rf "$wdir"
+# wc output: "       4 in.txt" (leading whitespace compressed by tr -s)
+if [[ "$wrc" == "0" && "$wgot" == *"4 in.txt"* ]]; then
+    printf "  %-12s PASS\n" "WC"
+    pass=$((pass + 1))
+else
+    printf "  %-12s FAIL (rc=%s out=%q)\n" "WC" "$wrc" "$wgot"
+    fail=$((fail + 1))
+fi
+
+# GNU gawk 5.0 (gwk500b).  Prints column 2 of a whitespace-
+# separated input -- exercises the regex engine + field split.
+adir=$(mktemp -d)
+cp build/dosemu tests/GAWK.EXE "$adir/"
+printf "1 2 3\n4 5 6\n" > "$adir/in.txt"
+(cd "$adir" && DOSEMU_DPMI_RING3=1 ./dosemu GAWK.EXE '{print $2}' in.txt 2>/dev/null) > "$adir/out" && arc=$? || arc=$?
+agot=$(tr -d '\r' < "$adir/out")
+rm -rf "$adir"
+if [[ "$arc" == "0" && "$agot" == "2"$'\n'"5" ]]; then
+    printf "  %-12s PASS\n" "GAWK"
+    pass=$((pass + 1))
+else
+    printf "  %-12s FAIL (rc=%s out=%q)\n" "GAWK" "$arc" "$agot"
+    fail=$((fail + 1))
+fi
+
+# GNU gzip 1.10 (gzip110b).  Compress then decompress the same
+# data and verify round-trip -- gate for binary-safe stdio and
+# that the compressor's deterministic state machine survives
+# the AH=3F/AH=40 paths without spurious CR/LF insertion.
+zdir=$(mktemp -d)
+cp build/dosemu tests/GZIP.EXE "$zdir/"
+printf "alpha beta gamma delta epsilon alpha beta gamma delta epsilon\n" > "$zdir/in.txt"
+orig=$(tr -d '\r' < "$zdir/in.txt")
+(cd "$zdir" && DOSEMU_DPMI_RING3=1 ./dosemu GZIP.EXE -c in.txt 2>/dev/null) > "$zdir/in.gz" && zrc=$? || zrc=$?
+(cd "$zdir" && DOSEMU_DPMI_RING3=1 ./dosemu GZIP.EXE -dc in.gz 2>/dev/null) > "$zdir/out" && zrc2=$? || zrc2=$?
+roundtrip=$(tr -d '\r' < "$zdir/out")
+rm -rf "$zdir"
+if [[ "$zrc" == "0" && "$zrc2" == "0" && "$roundtrip" == "$orig" ]]; then
+    printf "  %-12s PASS\n" "GZIP"
+    pass=$((pass + 1))
+else
+    printf "  %-12s FAIL (zip-rc=%s unzip-rc=%s out=%q)\n" "GZIP" "$zrc" "$zrc2" "$roundtrip"
+    fail=$((fail + 1))
+fi
+
 echo ""
 echo "  ${pass} passed, ${fail} failed"
 exit "$fail"
