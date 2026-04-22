@@ -463,7 +463,11 @@ jobs:
 
       - name: Real DOS-hosted Watcom tool (exe2bin.exe prints banner)
         run: |
-          out=$(build/dosemu tests/EXE2BIN.EXE 2>/dev/null)
+          # EXE2BIN prints its usage banner then exits with rc=255 (Watcom's
+          # "no file supplied" convention) -- `bash -e` would kill the step
+          # on that nonzero subshell exit even though dosemu did its job.
+          # We only care that the banner appears in output, not about rc.
+          out=$(build/dosemu tests/EXE2BIN.EXE 2>/dev/null || true)
           echo "dosemu output: $out"
           # Real Open Watcom DOS-hosted binary from the official distribution.
           echo "$out" | grep -q 'Open Watcom EXE to Binary Converter'
