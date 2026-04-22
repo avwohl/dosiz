@@ -37,11 +37,24 @@ This was achieved by five landed fixes (all in this session):
    aliases the PSP.
 
 All 37 existing local fixtures (HELLO, DPMI_* non-STAGE ones, LE_MIN,
-SPAWN, etc.) pass on arm64 Mac.  DJGPP programs that use stdio
-(fputs/fwrite) still have a separate buffering bug that truncates
-output -- direct `write()` calls work correctly and that's enough
-for the vast majority of interesting DJGPP programs (real `djecho`,
-djasm, gcc itself, etc.).
+SPAWN, etc.) pass on arm64 Mac.
+
+**Verified working DJGPP features** (all via DJGPP 2.05 libc + gcc
+12.2 built from andrewwutw/build-djgpp v3.4):
+- `printf` with format specifiers (`%d`, `%s`, `%.6f`, `%lX`, etc.).
+- `fputs`, `fwrite`, `fread`, stdio buffering (stdin/stdout).
+- `fopen` / `fprintf` / `fclose` / `fgets` (file create, write, read).
+- `malloc` / `free` (100-block 1KB round-trip, no leaks).
+- `argc` / `argv` (correct count and contents from DOS cmd tail).
+- `getenv` (COMSPEC, PATH, HOME, USER, LANG all accessible).
+- Exit-code propagation (return N from main → dosemu rc=N).
+
+**Sixth fix (5c3eaaf)**: AH=71 (LFN API) returns `AX=0x7100 CF=1`
+instead of `AX=0x0001 CF=1`.  DJGPP's libc checks `AX == 0x7100`
+to decide whether to retry with the short-filename API (AH=3C
+etc.); the default "invalid function" reply made it incorrectly
+report EINVAL and never fall back.  `fopen("...", "w")` now creates
+files.
 
 ---
 
