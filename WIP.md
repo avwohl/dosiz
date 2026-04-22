@@ -222,6 +222,68 @@ cleanly (no more "illegal descriptor type" abort). Without a
 client binary to load it sits in its own wait loop. The remaining
 gap for `DOS32A foo.exe` end-to-end is the LE loader above.
 
+## QEMM parity investigation — structural gap found
+
+Spent time tracing exactly why our DPMI doesn't satisfy DOS/4GW
+(with `DOSEMU_FORCE_DPMI=1`) or DJGPP's go32 stub.  Found the
+answer in CWSDPMI's open source (`/tmp/cwsdpmi` on dev machine):
+
+**We run DPMI clients at ring 0.  Real DPMI hosts run them at
+ring 3.**
+
+CWSDPMI's `GDT.H` shows a 17-entry GDT including dual code/data
+selectors (`rcode`/`rdata` ring 0 for the host, `pcode`/`pdata`
+ring 3 for client), three TSS selectors (`atss`/`ctss`/`itss`)
+for inter-ring transitions, and a dedicated `iret` selector.
+`#define run_ring 3`.
+
+Our GDT has 9 entries, no TSS, clients share ring 0 with us.
+That's structurally wrong for any real DPMI client.
+
+Concrete symptoms:
+- DOS/4GW tries to load selector 0x180 (GDT index 48).  Our GDT
+  ends at index 8.
+- DJGPP gcc (via go32 stub) takes a PM exception at EIP=0x28b,
+  very early in the stub's init -- probably before it even calls
+  its first INT 31h.
+
+Closing this requires:
+1. Grow GDT to 17+ entries matching CWSDPMI's layout
+2. Install a TSS for ring-0/ring-3 transitions
+3. Run clients at CPL=3 (flip RPL bits in selectors we hand out
+   via AX=0000, flip entry CS/DS/SS to ring 3)
+4. Properly dispatch exceptions with inter-level stack switch
+
+That's multi-session work.  Every DPMI test fixture we've written
+(DPMI_STAGE* etc.) runs clients at ring 0 and would need updating
+too.  Worth doing in a dedicated push once there's concrete
+motivation (e.g. if CI needs to cover a specific real DPMI
+binary).
+
+For now the practical path (commit 4af6fe5) stands: auto-detect
+bound extenders from MZ stub content, suppress DPMI
+advertisement for them, let them use their own PM machinery.
+`dosemu wcc386.exe hello.c` works with no flags; that's QEMM's
+user-facing promise even if the under-the-hood mechanism is
+different.
+
+## Available local DPMI-host-using clients for regression anchor
+
+Surveyed `~/ow/binw` (the Open Watcom install).  63 bare-MZ
+binaries (16-bit, work today), 26 DOS/4GW-bound, 5 PMODE/W-bound,
+2 DOS/16M-bound.  **Zero** binaries that would use an external
+DPMI host — Watcom's toolchain is self-contained around
+DOS/4GW.  DJGPP gcc binaries are available at
+`/tmp/djgpp/bin` on the dev machine but they need a ring-3 DPMI
+to run (same blocker as above).
+
+Without a working DPMI client to test against, the ring-3
+rewrite has no regression target.  Next tool would need to be
+DJGPP itself (once the ring-3 work is done) or an OSS PM program
+we can find that uses external DPMI.  Known candidates: early
+Windows 3.x setup tools, FoxPro 2.6 in DPMI mode, but
+availability + legality is unclear.
+
 ## pm_arena memory tier (new this session)
 
 `pm_alloc` / `pm_free` / `pm_resize` claim the extended-memory region
