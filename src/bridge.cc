@@ -2492,47 +2492,57 @@ Bitu dosemu_int31() {
       // Error:  CF=1, AX=8012h (out of memory)
       //
       // Two-tier backing store:
-      //   Tier 1: the MCB arena in conventional memory (paras fit in 16
-      //           bits).  Handle = SI:DI = 0:mcb_data_seg.
-      //   Tier 2: pm_arena above 1MB, for requests that don't fit in the
-      //           MCB or that the MCB chain can't satisfy right now.
-      //           Handle = SI:DI = high:low of host linear base (SI
-      //           always >= 0x0010 because base >= 0x100000).
-      // The two handle encodings are distinguishable by SI (0 vs >=16).
+      //   Tier 1 (preferred): pm_arena above 1MB.  Clients that make
+      //           multiple AX=0501 requests and extend a single
+      //           selector's limit to cover "their arena" get a
+      //           contiguous linear region that doesn't alias our
+      //           kernel structures (which sit at 0x100000..0x10FFFF,
+      //           below pm_arena's 0x120000 start).  Without this,
+      //           DJGPP-style clients allocate 700KB across 3 blocks,
+      //           set base=<first-block> + limit=1.5MB, and write at
+      //           DS:0xE3FF8 -- which lands on our LDT at 0x104028
+      //           whenever the first block came from the MCB arena in
+      //           conventional memory.  Handle = SI:DI = high:low of
+      //           host linear base (SI always >= 0x0012 because base
+      //           >= 0x120000).
+      //   Tier 2 (fallback): MCB arena in conventional memory.  Used
+      //           when pm_arena is saturated.  Handle = SI:DI = 0:
+      //           mcb_data_seg.  The two handle encodings are
+      //           distinguishable by SI (0 vs >=0x12).
       const uint32_t bytes = (static_cast<uint32_t>(reg_bx) << 16) | reg_cx;
       if (bytes == 0) {
         reg_ax = 0x8021;       // invalid value
         set_cf(true);
         return CBRET_NONE;
       }
+      // Tier 1: pm_arena.
+      const uint32_t linear = pm_alloc(bytes);
+      if (linear != 0) {
+        reg_bx = (linear >> 16) & 0xFFFF;
+        reg_cx = linear & 0xFFFF;
+        reg_si = (linear >> 16) & 0xFFFF;
+        reg_di = linear & 0xFFFF;
+        set_cf(false);
+        return CBRET_NONE;
+      }
+      // Tier 2: fall back to MCB for small requests if pm_arena full.
       const uint32_t paras32 = (bytes + 15u) >> 4;
-      // Tier 1 attempt for reasonable-sized requests.
       if (paras32 > 0 && paras32 <= 0xFFFFu) {
         uint16_t largest = 0;
         const uint16_t data_seg = mcb_allocate(
             static_cast<uint16_t>(paras32), largest);
         if (data_seg != 0) {
-          const uint32_t linear = static_cast<uint32_t>(data_seg) * 16u;
-          reg_bx = (linear >> 16) & 0xFFFF;
-          reg_cx = linear & 0xFFFF;
+          const uint32_t mcb_linear = static_cast<uint32_t>(data_seg) * 16u;
+          reg_bx = (mcb_linear >> 16) & 0xFFFF;
+          reg_cx = mcb_linear & 0xFFFF;
           reg_si = 0;
           reg_di = data_seg;
           set_cf(false);
           return CBRET_NONE;
         }
       }
-      // Tier 2: fall back to pm_arena.  Covers >1MB requests and MCB-OOM.
-      const uint32_t linear = pm_alloc(bytes);
-      if (linear == 0) {
-        reg_ax = 0x8012;
-        set_cf(true);
-        return CBRET_NONE;
-      }
-      reg_bx = (linear >> 16) & 0xFFFF;
-      reg_cx = linear & 0xFFFF;
-      reg_si = (linear >> 16) & 0xFFFF;
-      reg_di = linear & 0xFFFF;
-      set_cf(false);
+      reg_ax = 0x8012;
+      set_cf(true);
       return CBRET_NONE;
     }
 
