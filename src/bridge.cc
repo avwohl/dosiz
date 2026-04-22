@@ -321,12 +321,15 @@ uint32_t pm_alloc(uint32_t bytes) {
     found = cursor;
   if (found == 0) return 0;
   s_pm_busy.push_back({found, rounded});
-  // Intentionally skipping zero-fill: the DPMI spec doesn't require
-  // it, and touching every byte via mem_writeb for multi-MB blocks is
-  // slow enough that it desyncs dosbox's timer/IRET bookkeeping (seen
-  // during initial bring-up -- the IRET from AX=0501 tripped "Stack
-  // segment not writable" after a 1MB zero-fill loop).  Clients that
-  // want zeros clear the block themselves, same as DOS AH=48h.
+  // Zero-fill via mem_writed in 4-byte chunks.  DJGPP and similar
+  // clients assume fresh memory is zero-filled (their runtime checks
+  // uninitialized struct fields against 0).  Using mem_writed (not
+  // mem_writeb) keeps the loop fast enough that dosbox's timer/IRET
+  // bookkeeping doesn't desync on multi-MB fills.
+  for (uint32_t i = 0; i + 4 <= rounded; i += 4)
+    mem_writed(found + i, 0);
+  for (uint32_t i = (rounded & ~3u); i < rounded; ++i)
+    mem_writeb(found + i, 0);
   return found;
 }
 
