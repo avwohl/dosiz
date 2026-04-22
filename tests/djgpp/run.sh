@@ -289,6 +289,81 @@ else
     fail=$((fail + 1))
 fi
 
+# GNU patch (pat275b).  Applies a unified diff -- pairs with DIFF
+# to exercise the same text-file read/write path in both directions.
+pdir=$(mktemp -d)
+cp build/dosemu tests/PATCH.EXE "$pdir/"
+printf "hello\nworld\n" > "$pdir/a.txt"
+printf "2c2\n< world\n---\n> WORLD\n" > "$pdir/p.diff"
+(cd "$pdir" && DOSEMU_DPMI_RING3=1 ./dosemu PATCH.EXE a.txt p.diff 2>/dev/null) >/dev/null && prc=$? || prc=$?
+pfinal=$(tr -d '\r' < "$pdir/a.txt")
+rm -rf "$pdir"
+if [[ "$prc" == "0" && "$pfinal" == "hello"$'\n'"WORLD" ]]; then
+    printf "  %-12s PASS\n" "PATCH"
+    pass=$((pass + 1))
+else
+    printf "  %-12s FAIL (rc=%s final=%q)\n" "PATCH" "$prc" "$pfinal"
+    fail=$((fail + 1))
+fi
+
+# GNU tar (tar112ab).  Full round-trip: create archive with two
+# files, extract into a fresh dir, verify content matches.  Tests
+# multi-file I/O and the archive format on AH=3F/40.
+tdir=$(mktemp -d)
+cp build/dosemu tests/TAR.EXE "$tdir/"
+echo "file1-content" > "$tdir/a.txt"
+echo "file2-content" > "$tdir/b.txt"
+(cd "$tdir" && DOSEMU_DPMI_RING3=1 ./dosemu TAR.EXE cf out.tar a.txt b.txt 2>/dev/null) >/dev/null && trc1=$? || trc1=$?
+mkdir "$tdir/ex"
+cp build/dosemu tests/TAR.EXE "$tdir/out.tar" "$tdir/ex/"
+(cd "$tdir/ex" && DOSEMU_DPMI_RING3=1 ./dosemu TAR.EXE xf out.tar 2>/dev/null) >/dev/null && trc2=$? || trc2=$?
+tgot1=$(tr -d '\r' < "$tdir/ex/a.txt" 2>/dev/null)
+tgot2=$(tr -d '\r' < "$tdir/ex/b.txt" 2>/dev/null)
+rm -rf "$tdir"
+if [[ "$trc1" == "0" && "$trc2" == "0" \
+    && "$tgot1" == "file1-content" && "$tgot2" == "file2-content" ]]; then
+    printf "  %-12s PASS\n" "TAR"
+    pass=$((pass + 1))
+else
+    printf "  %-12s FAIL (cf-rc=%s xf-rc=%s a=%q b=%q)\n" \
+        "TAR" "$trc1" "$trc2" "$tgot1" "$tgot2"
+    fail=$((fail + 1))
+fi
+
+# GNU bc (bc1071b).  Feed expressions on stdin -- tests interactive-
+# style piped stdin reads to a program that does its own line
+# parsing, not just stdio buffered reads.
+bcdir=$(mktemp -d)
+cp build/dosemu tests/BC.EXE "$bcdir/"
+bcout=$(printf "2+2\n7*6\nquit\n" | (cd "$bcdir" && DOSEMU_DPMI_RING3=1 ./dosemu BC.EXE 2>/dev/null))
+bcrc=$?
+rm -rf "$bcdir"
+bcout=$(echo "$bcout" | tr -d '\r')
+if [[ "$bcrc" == "0" && "$bcout" == "4"$'\n'"42" ]]; then
+    printf "  %-12s PASS\n" "BC"
+    pass=$((pass + 1))
+else
+    printf "  %-12s FAIL (rc=%s out=%q)\n" "BC" "$bcrc" "$bcout"
+    fail=$((fail + 1))
+fi
+
+# GNU m4 1.4.19 (m4-1419b).  Macro processor -- expands a simple
+# define.  Different dispatch from sed (which uses regex); m4 does
+# parser-level text substitution with its own symbol table.
+mdir=$(mktemp -d)
+cp build/dosemu tests/M4.EXE "$mdir/"
+printf "define(\`GREET', \`Hi, \$1!')GREET(\`world')\n" > "$mdir/in.m4"
+(cd "$mdir" && DOSEMU_DPMI_RING3=1 ./dosemu M4.EXE in.m4 2>/dev/null) > "$mdir/out" && mrc=$? || mrc=$?
+mgot=$(tr -d '\r' < "$mdir/out")
+rm -rf "$mdir"
+if [[ "$mrc" == "0" && "$mgot" == "Hi, world!" ]]; then
+    printf "  %-12s PASS\n" "M4"
+    pass=$((pass + 1))
+else
+    printf "  %-12s FAIL (rc=%s out=%q)\n" "M4" "$mrc" "$mgot"
+    fail=$((fail + 1))
+fi
+
 echo ""
 echo "  ${pass} passed, ${fail} failed"
 exit "$fail"

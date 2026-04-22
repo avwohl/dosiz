@@ -63,3 +63,7 @@ make                    # build dosemu if not already
 | GZIP        | real GNU gzip 1.10 (gzip110b) — binary round-trip gate     |
 | LS          | real GNU ls (fil41b) — full findfirst/findnext dir enumeration |
 | FIND        | real GNU find (fnd4233b) — findfirst stat-by-exact-name    |
+| PATCH       | real GNU patch (pat275b) — applies unified diff            |
+| TAR         | real GNU tar 1.12 (tar112ab) — multi-file archive round-trip |
+| BC          | real GNU bc 1.07 (bc1071b) — piped stdin expression eval    |
+| M4          | real GNU m4 1.4.19 (m4-1419b) — macro-expansion pipeline   |
