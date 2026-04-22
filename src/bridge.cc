@@ -3593,8 +3593,19 @@ Bitu dosemu_int21() {
     case 0x3C: {  // Create file; CX=attr, DS:DX=path.  Returns handle in AX.
       const std::string dos_path = read_dos_string(SegValue(ds), reg_dx);
       const Resolved    r        = resolve_path(dos_path);
+      if (std::getenv("DOSEMU_OPEN_TRACE")) {
+        std::fprintf(stderr,
+            "[create] CX=%04x path='%s' -> host='%s'\n",
+            (unsigned)reg_cx, dos_path.c_str(), r.host_path.c_str());
+      }
       int fd = ::open(r.host_path.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
-      if (fd < 0) { return_error(0x05); break; }
+      if (fd < 0) {
+        if (std::getenv("DOSEMU_OPEN_TRACE")) {
+          std::fprintf(stderr, "[create] -> errno=%d (%s)\n", errno, strerror(errno));
+        }
+        return_error(0x05);
+        break;
+      }
       int h = allocate_handle(fd, r.text_mode);
       if (h < 0) { ::close(fd); return_error(0x04); break; }
       reg_ax = static_cast<uint16_t>(h);
@@ -4234,6 +4245,68 @@ Bitu dosemu_int21() {
       }
       return_error(0x01);  // invalid function
       break;
+    }
+
+    case 0x45: {  // Duplicate handle: BX = source handle -> AX = new handle
+      // Standard handles dup to a real host fd via dup(2); otherwise
+      // walk s_handles.  GNU flex uses this (via its stdio redirect)
+      // to plumb its output file onto stdout before writing the
+      // generated scanner.
+      int host_fd;
+      bool text_mode = false;
+      if (reg_bx <= 4) {
+        host_fd = static_cast<int>(reg_bx);
+      } else {
+        auto it = s_handles.find(reg_bx);
+        if (it == s_handles.end()) { return_error(0x06); break; }
+        host_fd = it->second.fd;
+        text_mode = it->second.text_mode;
+      }
+      int new_fd = ::dup(host_fd);
+      if (new_fd < 0) { return_error(0x04); break; }
+      int h = allocate_handle(new_fd, text_mode);
+      if (h < 0) { ::close(new_fd); return_error(0x04); break; }
+      reg_ax = static_cast<uint16_t>(h);
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
+    case 0x46: {  // Force duplicate: BX = source, CX = target; close CX if open
+      // This is POSIX dup2.  Flex does dup2(output_fd, 1) to send
+      // its generated scanner to stdout, then writes via AH=40 BX=1.
+      // Implement by dup2()'ing on the host side and updating the
+      // s_handles map so the guest's CX handle now points at the
+      // new host fd.
+      int src_fd;
+      bool src_text = false;
+      if (reg_bx <= 4) {
+        src_fd = static_cast<int>(reg_bx);
+      } else {
+        auto it = s_handles.find(reg_bx);
+        if (it == s_handles.end()) { return_error(0x06); break; }
+        src_fd = it->second.fd;
+        src_text = it->second.text_mode;
+      }
+      if (reg_cx <= 4) {
+        // Force target onto the real std-handle fd.  After this,
+        // AH=40 writes to BX=CX (e.g. 1) hit src_fd's host file.
+        if (::dup2(src_fd, static_cast<int>(reg_cx)) < 0) {
+          return_error(0x04); break;
+        }
+      } else {
+        // Target is a regular DOS handle.  Close whatever was there,
+        // then dup onto a fresh host fd and install it under CX.
+        auto dst = s_handles.find(reg_cx);
+        if (dst != s_handles.end()) {
+          ::close(dst->second.fd);
+          s_handles.erase(dst);
+        }
+        int new_fd = ::dup(src_fd);
+        if (new_fd < 0) { return_error(0x04); break; }
+        s_handles[reg_cx] = HostHandle{new_fd, src_text, -1};
+      }
+      set_cf(false);
+      return CBRET_NONE;
     }
 
     case 0x47: {  // Get current directory: DL = drive (0=current), DS:SI = 64-byte buf

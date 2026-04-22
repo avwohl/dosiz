@@ -364,6 +364,26 @@ else
     fail=$((fail + 1))
 fi
 
+# GNU flex 2.5.4 (flx254b).  Generates a lexical scanner -- exercises
+# AH=46h (force-dup, a.k.a. dup2) because flex dup2's its output
+# file onto stdout before writing the generated C.  Regression gate
+# for the dup/dup2 fix.
+xdir=$(mktemp -d)
+cp build/dosemu tests/FLEX.EXE "$xdir/"
+printf '%%%%\n[a-z]+ printf("word: %%s\\n", yytext);\n' > "$xdir/in.l"
+(cd "$xdir" && DOSEMU_DPMI_RING3=1 ./dosemu FLEX.EXE in.l 2>/dev/null) >/dev/null && xrc=$? || xrc=$?
+xlines=$(wc -l < "$xdir/lexyy.c" 2>/dev/null || echo 0)
+xhas_yylex=$(grep -c yylex "$xdir/lexyy.c" 2>/dev/null || echo 0)
+rm -rf "$xdir"
+if [[ "$xrc" == "0" && "$xlines" -gt 100 && "$xhas_yylex" -gt 0 ]]; then
+    printf "  %-12s PASS\n" "FLEX"
+    pass=$((pass + 1))
+else
+    printf "  %-12s FAIL (rc=%s lines=%s yylex=%s)\n" \
+        "FLEX" "$xrc" "$xlines" "$xhas_yylex"
+    fail=$((fail + 1))
+fi
+
 echo ""
 echo "  ${pass} passed, ${fail} failed"
 exit "$fail"

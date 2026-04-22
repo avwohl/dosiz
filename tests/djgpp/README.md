@@ -67,3 +67,4 @@ make                    # build dosemu if not already
 | TAR         | real GNU tar 1.12 (tar112ab) — multi-file archive round-trip |
 | BC          | real GNU bc 1.07 (bc1071b) — piped stdin expression eval    |
 | M4          | real GNU m4 1.4.19 (m4-1419b) — macro-expansion pipeline   |
+| FLEX        | real GNU flex 2.5.4 (flx254b) — dup2 of output onto stdout |
