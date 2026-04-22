@@ -400,6 +400,15 @@ std::vector<FileMapping>    s_file_mappings;
 // findfirst/findnext from it.  Default is PSP:0080h (128-byte area).
 uint32_t                    s_dta_linear = PSP_SEG * 16 + 0x80;
 
+// Current-process PSP + env segment, as known by AH=4B.  Default is
+// 0 (meaning "use PSP_SEG / ENV_SEG").  AH=4B sets these to the
+// child's MCB-allocated segments while the child runs so
+// dosemu_dpmi_entry aliases LDT[4]/LDT[5] to the child's memory (a
+// hardcoded PSP_SEG would alias the parent's PSP in a nested
+// DJGPP-under-DJGPP exec).  Restored on AH=4B cleanup.
+uint16_t                    s_current_psp_seg = 0;
+uint16_t                    s_current_env_seg = 0;
+
 // State for AH=4Eh/4Fh findfirst/findnext.  Keyed by DTA linear address.
 // Unlike a streaming readdir loop, we enumerate the whole directory up
 // front so that 8.3 collision numbering is deterministic across runs.
@@ -1234,24 +1243,27 @@ Bitu dosemu_dpmi_entry() {
     // to the env segment before DPMI entry, so the pure-spec behavior
     // would give LDT[4] an env alias, not a PSP alias.
     //
-    // We override: LDT[4] always aliases PSP_SEG, regardless of
-    // client's ES-at-entry.  This matches DJGPP's expectation and
-    // doesn't seem to break other clients (which don't read through
-    // psp_selector in a PSP-specific way).
-    write_ldt_descriptor(4, PSP_SEG * 16u, 0xFFFF, 0xF2);
+    // We override: LDT[4] always aliases the CURRENT PSP segment.
+    // For a top-level program that's PSP_SEG; for a child spawned
+    // via AH=4B it's child_psp.  AH=4B publishes this via
+    // s_current_psp_seg so dpmi_entry from the child still gets a
+    // correct PSP alias (a hardcoded PSP_SEG would alias the parent).
+    const uint16_t cur_psp_seg = s_current_psp_seg ? s_current_psp_seg : PSP_SEG;
+    write_ldt_descriptor(4, cur_psp_seg * 16u, 0xFFFF, 0xF2);
     ldt_set(4, true);
     // Also replace PSP[0x2C] (RM env segment) with a PM selector
     // aliasing the env block, since DJGPP treats that word as a
     // selector (after movedata'ing it out of PSP).  Allocate LDT[5]
-    // for the env alias.
-    write_ldt_descriptor(5, ENV_SEG * 16u, 0xFFFF, 0xF2);
+    // for the env alias.  The env seg for a child is cur_env_seg.
+    const uint16_t cur_env_seg = s_current_env_seg ? s_current_env_seg : ENV_SEG;
+    write_ldt_descriptor(5, cur_env_seg * 16u, 0xFFFF, 0xF2);
     ldt_set(5, true);
     const uint16_t ldt_cs = (1 << 3) | 0x04 | 0x03;   // 0x0F
     const uint16_t ldt_ds = (2 << 3) | 0x04 | 0x03;   // 0x17
     const uint16_t ldt_ss = (3 << 3) | 0x04 | 0x03;   // 0x1F
     const uint16_t ldt_es = (4 << 3) | 0x04 | 0x03;   // 0x27 (PSP alias)
     const uint16_t ldt_env = (5 << 3) | 0x04 | 0x03;  // 0x2F (env alias)
-    mem_writew(PSP_SEG * 16u + 0x2C, ldt_env);
+    mem_writew(cur_psp_seg * 16u + 0x2C, ldt_env);
 
     // Stage IRETD frame on ring-0 scratch stack.
     CPU_SetSegGeneral(ss, PM_CB_STACK);
@@ -4621,6 +4633,14 @@ Bitu dosemu_int21() {
       ps.child_env_seg  = child_env;
       s_process_stack.push_back(ps);
 
+      // Publish child's PSP + env segment so dpmi_entry (if the
+      // child goes protected) aliases LDT[4]/LDT[5] to the right
+      // memory.  Saved-and-restored around the nested RunMachine.
+      const uint16_t saved_psp_seg = s_current_psp_seg;
+      const uint16_t saved_env_seg = s_current_env_seg;
+      s_current_psp_seg = child_psp;
+      s_current_env_seg = child_env;
+
       // Switch CPU to child entry state (a real-mode CS load; shim's
       // current execution will "resume" child flow via the main loop's
       // LOADIP reading these fresh values).
@@ -4636,6 +4656,8 @@ Bitu dosemu_int21() {
 
       // Child exited via AH=4Ch; restore parent state.
       s_child_exit_pending = false;
+      s_current_psp_seg = saved_psp_seg;
+      s_current_env_seg = saved_env_seg;
       const ProcessState restored = s_process_stack.back();
       s_process_stack.pop_back();
       SegSet16(cs, restored.cs);
