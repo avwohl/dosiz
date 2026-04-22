@@ -782,7 +782,7 @@ constexpr uint32_t PM_CB_STACK_SIZE = 0x1000;
 // The `FE 38 LL HH` is dosbox's native-callback opcode with the cb_num
 // copied from the existing RM stub the real-mode IVT points at.
 constexpr uint16_t PM_SHIM_SEG        = 0x1C00;    // physical 0x1C000
-constexpr uint16_t PM_SHIM_SLOT_BYTES = 8;
+constexpr uint16_t PM_SHIM_SLOT_BYTES = 16;   // fits err-code discard + IRETD
 constexpr uint16_t PM_SHIM_TOTAL      = 256 * PM_SHIM_SLOT_BYTES;
 
 constexpr uint16_t IDT_SEG    = 0x1A00;       // physical 0x1A000
@@ -913,14 +913,28 @@ void pm_setup_gdt_and_idt(bool bits32, uint16_t client_cs,
     const uint8_t cb_hi = mem_readb(stub + scan + 3);
     const uint16_t slot_off = v * PM_SHIM_SLOT_BYTES;
     const PhysPt shim = PM_SHIM_SEG * 16u + slot_off;
-    mem_writeb(shim + 0, 0xFE);
-    mem_writeb(shim + 1, 0x38);
-    mem_writeb(shim + 2, cb_lo);
-    mem_writeb(shim + 3, cb_hi);
-    mem_writeb(shim + 4, 0x66);
-    mem_writeb(shim + 5, 0xCF);
-    mem_writeb(shim + 6, 0x90);
-    mem_writeb(shim + 7, 0x90);
+    // Exceptions 8, 10..14, 17 push a 4-byte error code AFTER
+    // EIP/CS/EFLAGS in 32-bit mode.  If we run the plain shim
+    // (FE 38 LL HH; 66 CF) on one of those, our IRETD pops the
+    // error code as EIP, the real EIP as CS, and the real CS as
+    // EFLAGS -- garbage, triggering "IRET:Illegal descriptor type
+    // 0x0".  For those vectors, prepend `add esp, 4` (66 83 C4 04)
+    // to pop the error code before the native call + IRETD.
+    const bool has_err = (v == 8 || (v >= 10 && v <= 14) || v == 17);
+    int i = 0;
+    if (has_err) {
+      mem_writeb(shim + i++, 0x66);   // 32-bit operand-size prefix
+      mem_writeb(shim + i++, 0x83);   // add r/m32, imm8
+      mem_writeb(shim + i++, 0xC4);   // modrm: ESP
+      mem_writeb(shim + i++, 0x04);   // +4
+    }
+    mem_writeb(shim + i++, 0xFE);   // native-call marker byte 1
+    mem_writeb(shim + i++, 0x38);   // native-call marker byte 2
+    mem_writeb(shim + i++, cb_lo);
+    mem_writeb(shim + i++, cb_hi);
+    mem_writeb(shim + i++, 0x66);   // 32-bit prefix -> IRETD
+    mem_writeb(shim + i++, 0xCF);   // IRETD
+    for (; i < PM_SHIM_SLOT_BYTES; ++i) mem_writeb(shim + i, 0x90);
     write_idt_gate(v, PM_SHIM_SEL, slot_off, true);
   }
   if (int21_cb_off)
@@ -961,6 +975,23 @@ Bitu dosemu_dpmi_entry() {
   for (auto &b : s_ldt_in_use) b = 0;
   s_ldt_in_use[0] |= 0x01;   // slot 0 reserved (null)
   for (auto &c : s_seg2desc_cache) c = 0;
+
+  // Replace CPU-exception vectors that don't double as BIOS/DOS
+  // interrupts with our le_exc handler (logs + terminates).  The
+  // default reflection path (call dosbox's RM CB for the vector +
+  // IRETD back) infinite-loops for genuine faults because the RM
+  // stub is a no-op and the IRETD returns to the same faulting IP.
+  //
+  // Vectors 0x00-0x0F are CPU-only in practice on DOS.  0x10-0x1F
+  // overlap with BIOS video/disk/kbd services (INT 10h..1Fh) which
+  // programs actually call as interrupts, so we keep the RM-reflection
+  // gates for those.  Clients that register real exception handlers
+  // via AX=0203 will overwrite these gates at that point.
+  const uint16_t exc_cb = bits32 ? s_le_exc_cb32_off : s_le_exc_cb16_off;
+  if (exc_cb) {
+    for (int v = 0; v < 0x10; ++v)
+      write_idt_gate(v, PM_CB_SEL, exc_cb, bits32);
+  }
 
   // Replace the stacked return-address CS with our PM code selector so the
   // stub's retf lands in PM rather than at an invalid real-mode segment.
