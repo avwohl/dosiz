@@ -89,12 +89,50 @@ client's state was already wrecked before the exception.  That's an
 earlier-stage bug (probably in our IRETD / RM-callback / ring-3
 transition elsewhere); the exception dispatch itself is now correct.
 
-**Next-session starting points:**
-- Track down what corrupts the client's SS:ESP (and CS:EIP) BEFORE
-  the first #GP fires.  Enable CPU trace, grep for the last legit
-  client instruction before SS goes to 0.  Likely an IRETD or RETF
-  in one of our DPMI handlers popping wrong state.
-- Eventually: paging, as before, for full ring-3 isolation.
+**Second round fixes landed (commit 18d17bd): PM_CB_STACK D=1**
+The ring-0 scratch stack descriptor had D=0 (16-bit).  Ring-change
+from ring-3 dispatched through the TSS's SS0:ESP0 = (PM_CB_STACK,
+0x1000), and CPU pushed the exception frame, but with D=0 only the
+low 16 bits of ESP were written by the push logic -- reg_esp kept
+the high 16 bits from the client's ring-3 ESP (e.g. 0x0007_0FE8
+instead of 0x0000_0FE8).  Every read in our dispatch trampoline then
+aimed at a wildly wrong linear address and came back zero.  Setting
+bits32=true on GDT[8] fixes this.
+
+With that, DJGPP djecho now runs its PM SIGSEGV handler **end to end**
+and prints its full register dump to stderr:
+
+    General Protection Fault at eip=00007c29
+    eax=00000000 ebx=0009ffff ecx=000000ff ...
+    cs: sel=002f base=00120000 limit=0009ffff
+    ...
+    Exiting due to signal SIGSEGV
+
+This is a qualitatively new milestone: DJGPP's userspace signal path
+is functional under our DPMI host.
+
+**Next gap (for later sessions):**
+
+1. **First real fault.**  Happens at 0x002f:0x7c29, which is DJGPP's
+   `__dpmi_int` LEAVEP epilogue -- specifically `popl %ss` (pops a
+   saved SS pushed at function entry before the INT 31h AX=0300 call).
+   If the popped value is 0 (null selector), `mov ss` raises #GP(0)
+   with err=0xF4.  Something between `pushl %ss` and `popl %ss` is
+   corrupting that saved SS slot; our AX=0300 mode-switch is the most
+   likely suspect.  (Found by reading /tmp/djsrc/src/libc/dpmi/api/
+   d0300_z.S: `pushl %ss; ... DPMI(0x0300); ... LEAVEP(... popl %ss;
+   popl %es)`.)
+
+2. **Secondary fault in exit path.**  After the handler prints the
+   dump it calls `_exit(-1)` -> `__exit` -> INT 21h AH=4C.  Inside
+   that, a second #GP fires at 0x002f:0x1acc with err=0 (null-selector
+   access).  Investigation would need to disassemble offset 0x1ACC of
+   djecho's COFF image to identify which DJGPP libc routine is on the
+   exit path.
+
+3. **Paging.**  As before, genuine ring-3 isolation needs CR0.PG=1 +
+   page tables so a misbehaving client can't overwrite host memory
+   through a legitimate selector.  Multi-session.
 
 **Why this is hard to fix without paging:** DPMI clients legitimately
 point their own selectors at arbitrary linear addresses.  With no
