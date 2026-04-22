@@ -2027,8 +2027,10 @@ Bitu dosemu_int31() {
         reg_ax = 0x8011; set_cf(true); return CBRET_NONE;
       }
       ldt_set(new_idx, true);
-      write_ldt_descriptor(new_idx, base, limit, 0x92);
-      reg_ax = (new_idx << 3) | 0x04;
+      // Access with DPL matching client CPL (0x92 ring-0 / 0xF2 ring-3).
+      const uint8_t access = 0x92 | (s_client_cpl << 5);
+      write_ldt_descriptor(new_idx, base, limit, access);
+      reg_ax = (new_idx << 3) | 0x04 | s_client_cpl;
       set_cf(false);
       return CBRET_NONE;
     }
@@ -2115,12 +2117,14 @@ Bitu dosemu_int31() {
       ldt_set(ldt_idx, true);
       // Limit covers the allocated region exactly: bx paragraphs * 16 - 1.
       const uint32_t limit_bytes = (static_cast<uint32_t>(reg_bx) << 4) - 1u;
-      write_ldt_descriptor(ldt_idx, data_seg * 16u, limit_bytes, 0x92);
+      // Access byte's DPL matches client CPL: 0x92 ring-0, 0xF2 ring-3.
+      const uint8_t access = 0x92 | (s_client_cpl << 5);
+      write_ldt_descriptor(ldt_idx, data_seg * 16u, limit_bytes, access);
       // Record the alias so AX=0002 on the same RM seg returns the
       // same selector (DPMI identity semantics).
       s_seg2desc_cache[data_seg] = ldt_idx;
       reg_ax = data_seg;
-      reg_dx = (ldt_idx << 3) | 0x04;   // TI=1 (LDT), RPL=0
+      reg_dx = (ldt_idx << 3) | 0x04 | s_client_cpl;   // TI=1, RPL=client
       set_cf(false);
       return CBRET_NONE;
     }
