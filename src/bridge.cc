@@ -3743,6 +3743,38 @@ Bitu dosemu_int21() {
       return CBRET_NONE;
     }
 
+    case 0x66: {  // Get/Set global code page
+      // Watcom's runtime probes this during startup.  Return CF=0 with
+      // BX=DX=437 (US code page) so the runtime's locale init proceeds.
+      reg_bx = 437;
+      reg_dx = 437;
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
+    case 0x68: {  // Commit file (DOS 4+, fsync equivalent)
+      // Caller wants changes flushed to disk.  Our host-side writes are
+      // already through write(2); fsync would be nicer but unnecessary.
+      // Report success.
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
+    case 0x52: {  // Get List-of-Lists pointer (ES:BX -> SYSVARS)
+      // Real DOS has a complex "list of lists" internal structure.  We
+      // don't have one, but many programs just check that the pointer
+      // is non-null and read specific offsets (e.g. first MCB segment).
+      // Point at a tiny sentinel area in the BIOS data segment and let
+      // the read return zero/FFFF values.  Most programs that call this
+      // during startup are just probing for a DOS internal; returning
+      // CF=0 with ES:BX = 0x0040:0x0000 (BIOS data) satisfies the
+      // lightest checks.
+      SegSet16(es, 0x0040);
+      reg_bx = 0;
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
     case 0xFF: {
       // Undocumented DOS/4GW API (Rational Systems / Tenberry).
       // Watcom's C runtime probes for DOS/4GW's presence via
