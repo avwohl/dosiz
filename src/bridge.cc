@@ -467,23 +467,40 @@ std::string dos_to_host(const std::string &dos_path) {
   struct stat st;
   if (::stat(literal.c_str(), &st) == 0) return literal;
 
-  // Fall back to a case-insensitive scan of the parent directory on the
-  // last segment only.  Intermediate dirs must exist exact-case today;
-  // extending to every segment is straightforward if a real tool needs it.
-  const size_t slash = literal.find_last_of('/');
-  const std::string parent = (slash == std::string::npos) ? "."
-                                                          : literal.substr(0, slash);
-  const std::string target_u = upper(
-      (slash == std::string::npos) ? literal : literal.substr(slash + 1));
-  DIR *d = ::opendir(parent.c_str());
-  if (!d) return literal;
-  std::string found;
-  while (struct dirent *ent = ::readdir(d)) {
-    if (upper(ent->d_name) == target_u) { found = ent->d_name; break; }
+  // Fall back to a case-insensitive walk segment by segment.  DOS paths
+  // are case-insensitive and programs freely uppercase (DJGPP's argv0
+  // does this).  On case-sensitive hosts (Linux CI), an exact match
+  // fails for any segment whose disk case differs, so each segment is
+  // resolved by scanning the parent directory.  On macOS (case-
+  // insensitive), the first stat above succeeds and we never get here.
+  std::string resolved;
+  size_t p = 0;
+  if (!literal.empty() && literal[0] == '/') { resolved = ""; p = 1; }
+  while (p <= literal.size()) {
+    const size_t next = literal.find('/', p);
+    const std::string seg = literal.substr(p,
+        next == std::string::npos ? std::string::npos : next - p);
+    if (seg.empty()) { if (next == std::string::npos) break; p = next + 1; continue; }
+    const std::string parent = resolved.empty() ? "/" : resolved;
+    const std::string seg_u = upper(seg);
+    DIR *d = ::opendir(parent.c_str());
+    std::string match;
+    if (d) {
+      while (struct dirent *ent = ::readdir(d)) {
+        if (upper(ent->d_name) == seg_u) { match = ent->d_name; break; }
+      }
+      ::closedir(d);
+    }
+    if (match.empty()) {
+      // No case-insensitive hit -- return the best-effort path so the
+      // caller's open() reports a useful ENOENT.
+      return resolved + "/" + literal.substr(p);
+    }
+    resolved += "/" + match;
+    if (next == std::string::npos) break;
+    p = next + 1;
   }
-  ::closedir(d);
-  if (!found.empty()) return parent + "/" + found;
-  return literal;        // caller will get ENOENT from the open() call
+  return resolved.empty() ? literal : resolved;
 }
 
 // Simple case-insensitive glob with * and ? — enough for DOS patterns.
