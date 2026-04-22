@@ -29,7 +29,7 @@ $(PATCH_MARKER): $(PATCH)
 dosbox: patch $(DB_BUILD)/libdosbox.a
 
 $(DB_BUILD)/libdosbox.a:
-	meson setup $(DB_BUILD) --buildtype=release $(DB_SRC)
+	meson setup $(DB_BUILD) $(DB_SRC) --buildtype=release
 	ninja -C $(DB_BUILD)
 
 configure: dosbox
