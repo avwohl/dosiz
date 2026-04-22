@@ -4819,6 +4819,26 @@ Bitu dosemu_int21() {
       break;
     }
 
+    case 0x5E: {  // Network / machine-name services.
+      // GNU find queries the NetBIOS machine name via AH=5E AL=00.
+      // Reply with a fixed "DOSEMU" identifier so the "unimplemented"
+      // log noise goes away; the specific name is cosmetic for our
+      // purposes and no real network is involved.
+      if (reg_al == 0x00) {
+        const PhysPt buf = SegPhys(ds) + reg_dx;
+        static const char kName[17] = "DOSEMU          ";
+        for (int i = 0; i < 16; ++i) mem_writeb(buf + i, kName[i]);
+        reg_cx = 0;    // CL=0: no network
+        reg_ch = 1;    // CH=1: name is valid
+        set_cf(false);
+        return CBRET_NONE;
+      }
+      // Other AL sub-functions (printer redirect, get NetBIOS vars)
+      // aren't implemented.  Return error; no real callers hit them.
+      return_error(0x01);
+      break;
+    }
+
     case 0x71: {
       // AH=71 is the DOS LFN (Long File Name) API.  DJGPP's libc
       // wraps every LFN call with a "was LFN available?" check:
