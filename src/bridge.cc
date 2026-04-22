@@ -1673,6 +1673,29 @@ Bitu dosemu_pm_exc_dispatch(int vec) {
     outer_ss  = static_cast<uint16_t>(mem_readd(r0_fp + 16) & 0xFFFF);
   }
 
+  // Recursion guard.  If the user handler's exit cleanup re-faults
+  // on the same vector at the same (or nearby) EIP, we're in an
+  // infinite-dispatch loop that'd never terminate otherwise
+  // (DJGPP's default SIGSEGV handler reports + _exit()s, but if
+  // _exit itself #GPs, we end up right back here).  CWSDPMI has
+  // an equivalent check via locked_count > 5 in EXPHDLR.C.
+  static int recursive_fault_count = 0;
+  static uint32_t last_fault_eip = 0;
+  static uint16_t last_fault_cs  = 0;
+  if (cs_val == last_fault_cs && eip == last_fault_eip) {
+    if (++recursive_fault_count > 4) {
+      std::fprintf(stderr,
+          "dosemu: PM exception dispatcher in recursive-fault loop "
+          "(vec=%d cs:eip=%04x:%08x err=0x%x) -- terminating\n",
+          vec, (unsigned)cs_val, (unsigned)eip, (unsigned)err);
+      return CBRET_STOP;
+    }
+  } else {
+    recursive_fault_count = 0;
+    last_fault_eip = eip;
+    last_fault_cs  = cs_val;
+  }
+
   const uint16_t user_sel = s_pm_exc[vec].sel;
   const uint32_t user_off = s_pm_exc[vec].off;
 
@@ -2167,7 +2190,12 @@ Bitu dosemu_int31() {
       //         BX must return the same selector per DPMI spec.
       const uint16_t seg = reg_bx;
       if (s_seg2desc_cache[seg] != 0) {
-        reg_ax = (s_seg2desc_cache[seg] << 3) | 0x04;
+        // DPMI spec: identity semantics -- same RM seg returns same
+        // selector across calls.  RPL must still match the client's
+        // CPL so ring-3 clients don't get a RPL=0 selector back (which
+        // would refuse to load into SS; would load into DS/ES/etc. but
+        // only because DPL=3 happens to satisfy MAX(CPL,RPL) <= DPL).
+        reg_ax = (s_seg2desc_cache[seg] << 3) | 0x04 | s_client_cpl;
         set_cf(false);
         return CBRET_NONE;
       }
