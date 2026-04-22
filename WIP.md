@@ -46,9 +46,55 @@ Ring-3 DPMI progressed substantially.  Two new bug categories fixed:
   what looks like a DJGPP exception-handler frame; the push
   sequence (`push [ebx+4]; push [ebx+0x2a]; ...; retf`) suggests
   either DPMI frame-format mismatch OR some earlier corruption
-  that left the struct in an invalid state.  Non-obvious to debug
-  without DJGPP source — but no longer a host-memory-corruption
-  class, so further work is purely DPMI-semantic tuning.
+  that left the struct in an invalid state.
+
+**Root cause identified + CWSDPMI-style dispatch landed (commit 09fd59b):**
+
+Downloaded DJGPP source (`djlsr205.zip`) and read `exceptn.S`.  The
+handler expects an 8-dword "exception frame" at `[SS:ESP]`:
+```
+[SP+ 0]  user_exception_return_EIP
+[SP+ 4]  user_exception_return_CS
+[SP+ 8]  err code
+[SP+12]  EIP  (of faulting instruction)
+[SP+16]  CS
+[SP+20]  EFLAGS
+[SP+24]  outer ESP
+[SP+28]  outer SS
+```
+i.e. the handler LRETs through `user_exception_return` (the first two
+slots) to unwind, and reads the rest as the CPU state it's handling.
+CWSDPMI's `EXPHDLR.C::user_exception()` constructs exactly that layout
+before transferring control to the user handler.
+
+Our AX=0203 now (for 32-bit handlers) installs an IDT gate pointing at
+a per-vector trampoline which:
+1. Runs at ring-0 (PM_CB_SEL DPL=0), reads the CPU-pushed ring-change
+   frame on our scratch stack.
+2. Builds the 8-dword CWSDPMI frame on a private known-good stack
+   (`GDT[15]` = ring-3 alias of `PM_CB_STACK_BASE`) -- CWSDPMI does
+   this too because the client's SS:ESP may be corrupt at fault time.
+3. Rewrites the stub's IRETD frame so the `66 CF` at the end of the
+   callback stub transitions to the user handler at ring-3 with the
+   CWSDPMI frame sitting at `[SP+0]`.
+4. `user_exception_return` (another trampoline, reached when the user
+   handler LRETs through `GDT[14]` = ring-3 alias of CB_SEG) reads the
+   frame, restores outer SS:ESP, and IRETDs back to the faulting
+   (possibly handler-modified) CS:EIP.
+
+All 37 fixtures still pass.  DJGPP djecho now correctly reaches the
+trampoline on its first #GP and runs the user handler -- but that
+first #GP fires with `CS=0 EIP=0 outer_SS=0 outer_ESP=0`, meaning the
+client's state was already wrecked before the exception.  That's an
+earlier-stage bug (probably in our IRETD / RM-callback / ring-3
+transition elsewhere); the exception dispatch itself is now correct.
+
+**Next-session starting points:**
+- Track down what corrupts the client's SS:ESP (and CS:EIP) BEFORE
+  the first #GP fires.  Enable CPU trace, grep for the last legit
+  client instruction before SS goes to 0.  Likely an IRETD or RETF
+  in one of our DPMI handlers popping wrong state.
+- Eventually: paging, as before, for full ring-3 isolation.
 
 **Why this is hard to fix without paging:** DPMI clients legitimately
 point their own selectors at arbitrary linear addresses.  With no
