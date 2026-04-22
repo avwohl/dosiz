@@ -61,3 +61,5 @@ make                    # build dosemu if not already
 | WC          | real GNU wc (txt20b) — simple line count                   |
 | GAWK        | real GNU gawk 5.0 (gwk500b) — regex/field-split engine     |
 | GZIP        | real GNU gzip 1.10 (gzip110b) — binary round-trip gate     |
+| LS          | real GNU ls (fil41b) — full findfirst/findnext dir enumeration |
+| FIND        | real GNU find (fnd4233b) — findfirst stat-by-exact-name    |

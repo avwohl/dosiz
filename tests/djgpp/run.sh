@@ -247,6 +247,48 @@ else
     fail=$((fail + 1))
 fi
 
+# GNU ls (fileutils fil41b).  Exercises AH=4E/4F findfirst/findnext
+# directory enumeration -- the full dance including ".", "..", and
+# attribute-byte for directory detection.  Regression gate for the
+# token-based find-state + DOS-semantic glob fixes.
+ldir=$(mktemp -d)
+cp build/dosemu tests/LS.EXE "$ldir/"
+echo "content-a" > "$ldir/a.txt"
+echo "content-b" > "$ldir/b.txt"
+mkdir "$ldir/subdir"
+(cd "$ldir" && DOSEMU_DPMI_RING3=1 ./dosemu LS.EXE 2>/dev/null) > "$ldir/out" && lrc=$? || lrc=$?
+lgot=$(tr -d '\r' < "$ldir/out")
+rm -rf "$ldir"
+# ls should list a.txt, b.txt, subdir, dosemu, ls.exe (case may vary).
+if [[ "$lrc" == "0" \
+    && "$lgot" == *"a.txt"* \
+    && "$lgot" == *"b.txt"* \
+    && "$lgot" == *"subdir"* ]]; then
+    printf "  %-12s PASS\n" "LS"
+    pass=$((pass + 1))
+else
+    printf "  %-12s FAIL (rc=%s out=%q)\n" "LS" "$lrc" "$lgot"
+    fail=$((fail + 1))
+fi
+
+# GNU find (fnd4233b).  Full recursive descent is DJGPP-port quirky
+# so we test a single-file stat -- that exercises the findfirst
+# on an exact filename (no-wildcard pattern), which is the usual
+# POSIX stat() path on DOS.
+fdir=$(mktemp -d)
+cp build/dosemu tests/FIND.EXE "$fdir/"
+echo hi > "$fdir/target.txt"
+(cd "$fdir" && DOSEMU_DPMI_RING3=1 ./dosemu FIND.EXE target.txt 2>/dev/null) > "$fdir/out" && frc=$? || frc=$?
+fgot=$(tr -d '\r' < "$fdir/out")
+rm -rf "$fdir"
+if [[ "$frc" == "0" && "$fgot" == *"target.txt"* ]]; then
+    printf "  %-12s PASS\n" "FIND"
+    pass=$((pass + 1))
+else
+    printf "  %-12s FAIL (rc=%s out=%q)\n" "FIND" "$frc" "$fgot"
+    fail=$((fail + 1))
+fi
+
 echo ""
 echo "  ${pass} passed, ${fail} failed"
 exit "$fail"

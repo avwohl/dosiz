@@ -411,8 +411,10 @@ struct FindState {
   std::vector<FindEntry> entries;  // filtered, already pattern-matched
   size_t                 index;    // next entry to return
   std::string            host_dir;
+  uint32_t               token;    // echoed into DTA[4..7]
 };
 std::map<uint32_t, FindState> s_finds;
+uint32_t s_next_find_token = 1;
 
 void close_find_state(FindState &st) {
   st.entries.clear();
@@ -504,7 +506,8 @@ std::string dos_to_host(const std::string &dos_path) {
 }
 
 // Simple case-insensitive glob with * and ? — enough for DOS patterns.
-bool glob_match(const std::string &name_u, const std::string &pat_u) {
+// Linear glob with '*' / '?'.  Used for each 8.3 half separately below.
+bool glob_match_part(const std::string &name_u, const std::string &pat_u) {
   size_t ni = 0, pi = 0;
   size_t star_pi = std::string::npos, star_ni = 0;
   while (ni < name_u.size()) {
@@ -522,6 +525,25 @@ bool glob_match(const std::string &name_u, const std::string &pat_u) {
   }
   while (pi < pat_u.size() && pat_u[pi] == '*') ++pi;
   return pi == pat_u.size();
+}
+
+// DOS-semantic glob: split both name and pattern at their last '.',
+// match base-vs-base and ext-vs-ext independently.  This is what makes
+// "*.*" match "BIN" (empty ext matches pattern's "*") and "*.C" match
+// "FOO.C" but not "FOO".
+bool glob_match(const std::string &name_u, const std::string &pat_u) {
+  auto split = [](const std::string &s) -> std::pair<std::string, std::string> {
+    const size_t d = s.find_last_of('.');
+    if (d == std::string::npos) return {s, ""};
+    return {s.substr(0, d), s.substr(d + 1)};
+  };
+  auto [nb, ne] = split(name_u);
+  auto [pb, pe] = split(pat_u);
+  // If the pattern has no dot, match against the full name.
+  if (pat_u.find('.') == std::string::npos) {
+    return glob_match_part(name_u, pat_u);
+  }
+  return glob_match_part(nb, pb) && glob_match_part(ne, pe);
 }
 
 bool has_wildcard(const std::string &s) {
@@ -594,7 +616,8 @@ void dos_time_from_unix(time_t t, uint16_t &date, uint16_t &dostime) {
 }
 
 // Write a matched entry to the current DTA.
-void dta_write_entry(const std::string &host_full, const std::string &mangled_name) {
+void dta_write_entry(const std::string &host_full, const std::string &mangled_name,
+                     uint32_t find_token = 0) {
   struct stat st{};
   ::stat(host_full.c_str(), &st);
 
@@ -603,6 +626,19 @@ void dta_write_entry(const std::string &host_full, const std::string &mangled_na
 
   // Zero reserved area (0x00..0x14).
   for (int i = 0; i < 0x15; ++i) mem_writeb(s_dta_linear + i, 0);
+  // Magic + token (bytes 0..7): "DS" then 32-bit find state key.
+  // Programs that reshuffle the DTA between findfirst and findnext
+  // (GNU find does this) need the state key to travel with the data.
+  if (find_token) {
+    mem_writeb(s_dta_linear + 0, 'D');
+    mem_writeb(s_dta_linear + 1, 'S');
+    mem_writeb(s_dta_linear + 2, 'F');
+    mem_writeb(s_dta_linear + 3, 'N');
+    mem_writeb(s_dta_linear + 4, find_token        & 0xFF);
+    mem_writeb(s_dta_linear + 5, (find_token >>  8) & 0xFF);
+    mem_writeb(s_dta_linear + 6, (find_token >> 16) & 0xFF);
+    mem_writeb(s_dta_linear + 7, (find_token >> 24) & 0xFF);
+  }
   mem_writeb(s_dta_linear + 0x15, S_ISDIR(st.st_mode) ? 0x10 : 0x20);   // attr
   mem_writeb(s_dta_linear + 0x16, dostime & 0xFF);
   mem_writeb(s_dta_linear + 0x17, (dostime >> 8) & 0xFF);
@@ -636,7 +672,7 @@ bool scan_next(FindState &st) {
     return false;
   }
   const auto &e = st.entries[st.index++];
-  dta_write_entry(st.host_dir + "/" + e.host_name, e.mangled_8_3);
+  dta_write_entry(st.host_dir + "/" + e.host_name, e.mangled_8_3, st.token);
   return true;
 }
 
@@ -661,6 +697,16 @@ bool build_find_state(const std::string &host_dir,
   out.entries.clear();
   out.host_dir = host_dir;
   out.index    = 0;
+  // Real DOS subdirectories always list "." and ".." first.  Many
+  // DOS ports of POSIX tools (GNU find, ls via opendir) rely on
+  // that to stat the directory itself -- they call findfirst(".")
+  // expecting a hit with attr=DIR.  Include them up front and let
+  // glob_match filter when the caller narrows (e.g., "*.C").
+  for (const auto *dotname : {".", ".."}) {
+    if (glob_match(dotname, pattern_u)) {
+      out.entries.push_back({dotname, dotname});
+    }
+  }
   for (const auto &n : names) {
     const std::string m = mangle_8_3(n, used);
     if (glob_match(m, pattern_u)) {
@@ -3573,6 +3619,16 @@ Bitu dosemu_int21() {
       }
       int fd = ::open(r.host_path.c_str(), flags);
       if (fd < 0) { return_error(0x02); break; }
+      // DOS AH=3Dh refuses to open directories (returns error 05h
+      // access denied).  POSIX open(2) on a dir succeeds and only
+      // fails later on read, which confuses callers like GNU find
+      // that probe with open+fstat to classify paths.
+      struct stat st;
+      if (::fstat(fd, &st) == 0 && S_ISDIR(st.st_mode)) {
+        ::close(fd);
+        return_error(0x05);
+        break;
+      }
       int h = allocate_handle(fd, r.text_mode);
       if (h < 0) { ::close(fd); return_error(0x04); break; }
       reg_ax = static_cast<uint16_t>(h);
@@ -3745,24 +3801,40 @@ Bitu dosemu_int21() {
       const std::string dos_path = read_dos_string(SegValue(ds), reg_dx);
       auto [dir_part, pat_part]  = split_dir_pattern(dos_path);
 
-      // Evict any prior state on this DTA.
-      s_finds.erase(s_dta_linear);
-
       const std::string host_dir = dir_part.empty()
           ? dos_to_host("") : dos_to_host(dir_part);
       FindState st;
+      st.token = s_next_find_token++;
       if (!build_find_state(host_dir, upper(pat_part), st)) {
         return_error(0x03); break;                   // path not found
       }
       if (!scan_next(st)) { return_error(0x12); break; }
-      s_finds[s_dta_linear] = std::move(st);
+      const uint32_t tok = st.token;
+      s_finds[tok] = std::move(st);
       set_cf(false);
       return CBRET_NONE;
     }
 
     case 0x4F: {  // Find next: continues the DTA's saved state
-      auto it = s_finds.find(s_dta_linear);
-      if (it == s_finds.end()) { return_error(0x12); break; }
+      // The search state key lives in the DTA itself (bytes 4..7
+      // after our "DSFN" magic at 0..3), not at the DTA pointer.
+      // Programs that swap DTAs between findfirst and findnext
+      // (GNU find) rely on this.
+      uint32_t tok = 0;
+      if (mem_readb(s_dta_linear + 0) == 'D' &&
+          mem_readb(s_dta_linear + 1) == 'S' &&
+          mem_readb(s_dta_linear + 2) == 'F' &&
+          mem_readb(s_dta_linear + 3) == 'N') {
+        tok  = mem_readb(s_dta_linear + 4);
+        tok |= mem_readb(s_dta_linear + 5) <<  8;
+        tok |= mem_readb(s_dta_linear + 6) << 16;
+        tok |= mem_readb(s_dta_linear + 7) << 24;
+      }
+      auto it = s_finds.find(tok);
+      if (tok == 0 || it == s_finds.end()) {
+        return_error(0x12);
+        break;
+      }
       if (!scan_next(it->second)) {
         s_finds.erase(it);
         return_error(0x12);
