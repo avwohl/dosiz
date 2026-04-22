@@ -3559,6 +3559,12 @@ Bitu dosemu_int21() {
     case 0x3D: {  // Open file; AL=mode, DS:DX=path.  Returns handle in AX.
       const std::string dos_path = read_dos_string(SegValue(ds), reg_dx);
       const Resolved    r        = resolve_path(dos_path);
+      if (std::getenv("DOSEMU_OPEN_TRACE")) {
+        std::fprintf(stderr,
+            "[open] AL=%02x DS:DX=%04x:%04x path='%s' -> host='%s' textmode=%d\n",
+            (unsigned)reg_al, (unsigned)SegValue(ds), (unsigned)reg_dx,
+            dos_path.c_str(), r.host_path.c_str(), (int)r.text_mode);
+      }
       int flags = O_RDONLY;
       switch (reg_al & 0x07) {
         case 0: flags = O_RDONLY; break;
@@ -3575,6 +3581,13 @@ Bitu dosemu_int21() {
     }
 
     case 0x3E: {  // Close handle in BX.
+      // Standard handles 0-4 (stdin/stdout/stderr/aux/prn) close
+      // silently without actually freeing the host FD -- real DOS
+      // dup's these from DOS internal tables, and a close returns OK
+      // but doesn't invalidate the slot.  DJGPP grep (and others) do
+      // an atexit close on stdout/stderr; returning EBADF here makes
+      // them emit a spurious "write error" diagnostic.
+      if (reg_bx <= 4) { set_cf(false); return CBRET_NONE; }
       const auto it = s_handles.find(reg_bx);
       if (it == s_handles.end()) { return_error(0x06); break; }
       ::close(it->second.fd);
@@ -3798,10 +3811,91 @@ Bitu dosemu_int21() {
       return CBRET_NONE;
     }
 
+
     case 0x5D: {  // Network / file-locking sub-functions; report "not
                   // supported" so programs fall back to normal file ops.
       return_error(0x01);
       break;
+    }
+
+    case 0x60: {  // Qualify/canonicalize filename.
+      // Input : DS:SI = source ASCIIZ filename
+      //         ES:DI = 128-byte output buffer
+      // Output: AX=0 success; ES:DI filled with canonicalized path
+      //         (drive letter + absolute path with backslashes, upper
+      //         case, ASCIIZ).  CF=1 + AX=0x02 on not-found.
+      //
+      // DJGPP's libc (_truename, realpath, glob) uses this heavily.
+      // Returning "invalid function" (AL=01) as the default unknown
+      // handler does made DJGPP libc leave internal state inconsistent
+      // and later fd ops returned EBADF spuriously.  We implement a
+      // minimal pass-through: resolve relative paths against cwd,
+      // prepend the current drive, uppercase, write to ES:DI.
+      const std::string src = read_dos_string(SegValue(ds), reg_si);
+      // Split off drive letter if any.
+      std::string path = src;
+      char drive = s_current_drive;
+      if (path.size() >= 2 && path[1] == ':') {
+        drive = static_cast<char>(std::toupper(
+                    static_cast<unsigned char>(path[0])));
+        path.erase(0, 2);
+      }
+      // If not absolute (no leading slash/backslash), prepend cwd.
+      if (path.empty() || (path[0] != '\\' && path[0] != '/')) {
+        const std::string &cwd = s_drive_cwd[drive]; // "" if unset
+        if (!cwd.empty() && cwd.front() != '\\' && cwd.front() != '/')
+          path = "\\" + cwd + "\\" + path;
+        else
+          path = (cwd.empty() ? "\\" : cwd + "\\") + path;
+      }
+      // Normalize slashes + uppercase.
+      for (auto &c : path) {
+        if (c == '/') c = '\\';
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+      }
+      std::string canon;
+      canon += drive;
+      canon += ':';
+      canon += path;
+      if (canon.size() > 127) canon.resize(127);   // leave room for NUL
+      const PhysPt dst = SegPhys(es) + reg_di;
+      for (size_t i = 0; i < canon.size(); ++i)
+        mem_writeb(dst + i, static_cast<uint8_t>(canon[i]));
+      mem_writeb(dst + canon.size(), 0);
+      reg_ax = 0;
+      set_cf(false);
+      return CBRET_NONE;
+    }
+
+    case 0x65: {  // Get extended country information.
+      // Input : AL=subfunction, BX=codepage (-1=current), DX=country
+      //         (-1=current), ES:DI=buffer, CX=buffer size
+      // Output: on success CX=info len, buffer filled.
+      // Our minimal implementation reports US / codepage 437 /
+      // "C"-locale-equivalent.  DJGPP libc uses this in setlocale
+      // and various isalpha/toupper tables.  A real-data response
+      // is cheaper than dealing with programs that choke on the
+      // "invalid function" default.
+      const uint16_t cx_in = reg_cx;
+      const PhysPt dst = SegPhys(es) + reg_di;
+      // 41-byte response (id=1): info-id, size, codepage, country,
+      // then date-fmt/time-fmt/currency/thousands/decimal/etc.
+      uint8_t buf[41] = {0};
+      buf[0] = 0x01;                                 // info id
+      buf[1] = sizeof(buf) & 0xFF;
+      buf[2] = 0;
+      buf[3] = 0xB5; buf[4] = 0x01;                  // codepage = 437
+      buf[5] = 0x01; buf[6] = 0x00;                  // country = 1 (USA)
+      buf[7] = 0;                                    // date format = US m/d/y
+      buf[8] = '$'; buf[9] = 0;                      // currency
+      buf[14] = ','; buf[16] = '.';                  // thousands/decimal
+      buf[30] = ':'; buf[32] = '/';                  // time / date sep
+      size_t n = std::min<size_t>(cx_in, sizeof(buf));
+      for (size_t i = 0; i < n; ++i)
+        mem_writeb(dst + i, buf[i]);
+      reg_cx = static_cast<uint16_t>(n);
+      set_cf(false);
+      return CBRET_NONE;
     }
 
     case 0x63: {  // Get lead-byte table (DBCS).  Report "no DBCS" via a
@@ -3847,6 +3941,40 @@ Bitu dosemu_int21() {
       }
       set_cf(false);
       return CBRET_NONE;
+    }
+
+    case 0x57: {  // Get/Set File Date/Time; AL=0 get, AL=1 set, BX=fd.
+      // AL=0 returns CX=packed time, DX=packed date for the host fstat
+      // of fd.  AL=1 takes CX/DX and applies via utimensat; we accept
+      // it silently.  DJGPP's fstat() calls this as part of its
+      // non-SFT fallback to fill in st_mtime.
+      if (reg_al == 0x00) {
+        auto it = s_handles.find(reg_bx);
+        if (it == s_handles.end()) { return_error(0x06); break; }
+        struct stat st;
+        if (::fstat(it->second.fd, &st) < 0) { return_error(0x05); break; }
+        struct tm *tm = ::localtime(&st.st_mtime);
+        if (!tm) { return_error(0x05); break; }
+        // DOS packed time: bits 15-11 hour, 10-5 min, 4-0 sec/2.
+        reg_cx = static_cast<uint16_t>((tm->tm_hour << 11)
+                                      | (tm->tm_min  << 5)
+                                      | (tm->tm_sec  >> 1));
+        // DOS packed date: bits 15-9 year-1980, 8-5 month, 4-0 day.
+        const int yr = tm->tm_year + 1900 - 1980;
+        reg_dx = static_cast<uint16_t>((std::max(0, std::min(yr, 127)) << 9)
+                                      | ((tm->tm_mon + 1) << 5)
+                                      |  tm->tm_mday);
+        set_cf(false);
+        return CBRET_NONE;
+      }
+      if (reg_al == 0x01) {
+        // Accept the set silently (no-op); programs that care just
+        // need CF=0.
+        set_cf(false);
+        return CBRET_NONE;
+      }
+      return_error(0x01);
+      break;
     }
 
     case 0x30: {  // Get DOS version.  Report 6.22, no OEM info.
@@ -3959,14 +4087,26 @@ Bitu dosemu_int21() {
       break;
     }
 
-    case 0x44: {  // IOCTL.  Only AL=0 (get device info) minimally supported.
+    case 0x44: {  // IOCTL.
+      if (std::getenv("DOSEMU_OPEN_TRACE")) {
+        std::fprintf(stderr, "[ioctl] AL=%02x BX=%04x CX=%04x DX=%04x\n",
+            (unsigned)reg_al, (unsigned)reg_bx, (unsigned)reg_cx, (unsigned)reg_dx);
+      }
       if (reg_al == 0x00) {
-        // Report "file" (no device flag) for our handles.  Real DOS sets
-        // bit 7 for character devices (stdin/stdout/con) -- many isatty
-        // checks live here.
+        // Get device info: DX = attribute bits.  Bit 7 = character
+        // device (stdin/stdout/con), 0 = regular file.  Validate the
+        // handle so DJGPP's isatty() / open() post-check gets the
+        // right answer instead of "file" for a bogus BX.
         if (reg_bx == 0 || reg_bx == 1 || reg_bx == 2) {
-          reg_dx = 0x80 | (reg_bx & 0x07); // char device, handle-as-dev-number
+          reg_dx = 0x80 | (reg_bx & 0x07); // char device
         } else {
+          auto it = s_handles.find(reg_bx);
+          if (it == s_handles.end()) {
+            // Unknown handle -> EBADF equivalent.  DJGPP's libc checks
+            // CF after AH=44 AL=0 and translates 0x06 to EBADF.
+            return_error(0x06);
+            break;
+          }
           reg_dx = 0; // regular file
         }
         set_cf(false);
@@ -4364,14 +4504,23 @@ Bitu dosemu_int21() {
 
     case 0x52: {  // Get List-of-Lists pointer (ES:BX -> SYSVARS)
       // Real DOS has a complex "list of lists" internal structure.  We
-      // don't have one, but many programs just check that the pointer
-      // is non-null and read specific offsets (e.g. first MCB segment).
-      // Point at a tiny sentinel area in the BIOS data segment and let
-      // the read return zero/FFFF values.  Most programs that call this
-      // during startup are just probing for a DOS internal; returning
-      // CF=0 with ES:BX = 0x0040:0x0000 (BIOS data) satisfies the
-      // lightest checks.
-      SegSet16(es, 0x0040);
+      // don't have one, but we DO need its first SFT-chain-pointer
+      // slot at offset 4 to contain 0xFFFF -- DJGPP's fstat() walks
+      // the SFT chain to look up fd → file info, and treats 0xFFFF as
+      // "end of chain" (return -2, fall back to non-SFT path).  If we
+      // return a pointer whose +4 word is garbage, fstat fails with
+      // EBADF on our file handles.
+      //
+      // Maintain a 16-byte static block at linear 0x0600 with the
+      // sentinel in place.  Point ES:BX there.
+      static bool inited = false;
+      if (!inited) {
+        for (int i = 0; i < 16; i++) mem_writeb(0x600 + i, 0);
+        mem_writeb(0x604, 0xFF);  // SFT chain head offset lo
+        mem_writeb(0x605, 0xFF);  // SFT chain head offset hi
+        inited = true;
+      }
+      SegSet16(es, 0x0060);
       reg_bx = 0;
       set_cf(false);
       return CBRET_NONE;
@@ -5229,6 +5378,27 @@ void build_psp(const std::string &program_path,
   // (0xA000) reports 640K - PSP_SEG = ~639K as the arena size.
   mem_writeb(psp + 0x02, 0x00);
   mem_writeb(psp + 0x03, 0xA0);
+
+  // PSP[0x18..0x2B] = 20-byte Job File Table (handle -> SFT index).
+  // Initialize to 0xFF (= "closed") to be honest, then overwrite the
+  // standard handles 0..4 with identity indices.  DJGPP's fstat walks
+  // this via PSP[0x34] (far pointer).
+  for (int i = 0x18; i <= 0x2B; i++) mem_writeb(psp + i, 0xFF);
+  mem_writeb(psp + 0x18, 0x00); // stdin
+  mem_writeb(psp + 0x19, 0x01); // stdout
+  mem_writeb(psp + 0x1A, 0x02); // stderr
+  mem_writeb(psp + 0x1B, 0x03); // aux
+  mem_writeb(psp + 0x1C, 0x04); // prn
+
+  // PSP[0x32] = maximum number of open handles (word).
+  mem_writeb(psp + 0x32, 20);
+  mem_writeb(psp + 0x33, 0);
+
+  // PSP[0x34..0x37] = far pointer to the JFT (above).  Points at PSP:0x18.
+  mem_writeb(psp + 0x34, 0x18);     // offset lo
+  mem_writeb(psp + 0x35, 0x00);     // offset hi
+  mem_writeb(psp + 0x36, PSP_SEG & 0xFF);
+  mem_writeb(psp + 0x37, (PSP_SEG >> 8) & 0xFF);
 
   // Environment segment at offset 2Ch.
   build_env_block(program_path);

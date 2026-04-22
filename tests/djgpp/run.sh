@@ -97,6 +97,32 @@ else
     fail=$((fail + 1))
 fi
 
+# Another real DJGPP tool: grep (grep228b from delorie.com).  Needs
+# AH=52 (fake sysvars), AH=57 (file date/time), AH=60 (canonicalize),
+# AH=65 (country info), and AH=3E-of-stdout-as-no-op to run.  Feed a
+# 4-line fixture and verify it matches the lines we expect, then
+# verify the no-match case returns rc=1 (grep convention).
+#
+# Both dosemu and grep.exe are copied into a tmpdir so cwd-based
+# drive mount lands there and grep's self-open via argv[0] finds
+# grep.exe as C:\GREP.EXE.
+gdir=$(mktemp -d)
+cp build/dosemu "$gdir/"
+cp tests/GREP.EXE "$gdir/"
+printf "alpha\nbeta\nalphabet\ngamma\n" > "$gdir/input.txt"
+(cd "$gdir" && DOSEMU_DPMI_RING3=1 ./dosemu GREP.EXE alpha input.txt 2>/dev/null) > "$gdir/out" && rc=$? || rc=$?
+got=$(tr -d '\r' < "$gdir/out")
+(cd "$gdir" && DOSEMU_DPMI_RING3=1 ./dosemu GREP.EXE nomatch input.txt 2>/dev/null) > /dev/null && rc2=$? || rc2=$?
+rm -rf "$gdir"
+if [[ "$rc" == "0" && "$got" == *"alpha"$'\n'"alphabet"* && "$rc2" == "1" ]]; then
+    printf "  %-12s PASS\n" "GREP"
+    pass=$((pass + 1))
+else
+    printf "  %-12s FAIL (match-rc=%s no-match-rc=%s out=%q)\n" \
+        "GREP" "$rc" "$rc2" "$got"
+    fail=$((fail + 1))
+fi
+
 echo ""
 echo "  ${pass} passed, ${fail} failed"
 exit "$fail"
