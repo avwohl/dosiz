@@ -3143,6 +3143,12 @@ Bitu dosemu_int31() {
       const uint8_t intnum = reg_bl;
       // Pin the struct's linear address before we touch segments.
       const PhysPt rmcs = SegPhys(es) + reg_edi;
+      if (std::getenv("DOSEMU_SIMRM_TRACE")) {
+        std::fprintf(stderr,
+            "[simrm] INT %02x  es=%04x(base=%08x) edi=%08x -> rmcs=%08x\n",
+            (unsigned)intnum, (unsigned)SegValue(es),
+            (unsigned)SegPhys(es), (unsigned)reg_edi, (unsigned)rmcs);
+      }
 
       // Snapshot PM state (segments + full register file + stack).
       const uint32_t saved_cr0  = cpu.cr0;
@@ -3200,10 +3206,18 @@ Bitu dosemu_int31() {
         SegSet16(ss, s_ss);
         reg_esp = s_sp;
       } else {
-        // Scratch stack in the DOS data area.  The DPMI spec lets the
-        // host provide one when the client leaves SS:SP zero.
-        SegSet16(ss, 0x0050);
-        reg_esp = 0x0F00;
+        // Scratch stack for when client leaves SS:SP zero.
+        // Must NOT overlap the MZ image, PSP, or any region the client
+        // may touch.  We sit at 0x9000:0xFFxx = linear 0x9FFxx -- the
+        // top of conventional memory, below the EBDA/VGA BIOS region
+        // but above any typical DOS program's arena end.  DJGPP go32-v2
+        // calls AX=0300 with SS=0 for its sim-RM INT 21h, and the
+        // ensuing INT pushes FLAGS/CS/IP onto this stack.  A previous
+        // choice of 0x0050:0x0F00 = linear 0x1400 landed INSIDE the
+        // stub image itself (stub loads at 0x1100-0x18FF), corrupting
+        // its code and making .data load never happen.
+        SegSet16(ss, 0x9000);
+        reg_esp = 0xFFF0;
       }
 
       CALLBACK_RunRealInt(intnum);
@@ -3574,6 +3588,16 @@ Bitu dosemu_int21() {
       std::vector<uint8_t> buf(reg_cx);
       const PhysPt src = SegPhys(ds) + reg_dx;
       for (uint16_t i = 0; i < reg_cx; ++i) buf[i] = mem_readb(src + i);
+      if (std::getenv("DOSEMU_WRITE_TRACE")) {
+        std::fprintf(stderr,
+            "[write] fd=%d cx=%u ds=%04x(base=%08x) dx=%04x src_lin=%08x bytes:",
+            (int)reg_bx, (unsigned)reg_cx,
+            (unsigned)SegValue(ds), (unsigned)SegPhys(ds),
+            (unsigned)reg_dx, (unsigned)src);
+        for (uint16_t i = 0; i < reg_cx && i < 40; ++i)
+          std::fprintf(stderr, " %02x", buf[i]);
+        std::fprintf(stderr, "\n");
+      }
       if (text_mode) {
         // DOS sends CR LF for newlines.  Host wants Unix-style LF.  Strip
         // CR bytes entirely -- lone CRs are rare and better dropped than
