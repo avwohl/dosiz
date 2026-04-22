@@ -30,13 +30,25 @@ Ring-3 DPMI progressed substantially.  Two new bug categories fixed:
   own exception handlers via AX=0202/0203 for vectors 0x00..0x11,
   allocates DPMI memory (128KB + 512KB + 60KB), does several
   sim-RM INT 21h round-trips.
-- Blocks on a deeper issue: the client extends its CS/DS/SS limits
-  to 1.5MB via AX=0008 after allocating only 700KB across three
-  non-contiguous blocks.  When the client's legit data-access
-  pattern hits offset 0xE3FF8 of DS (base 0x20030), linear address
-  is 0x104028 — our LDT[5].  The client writes garbage there, then
-  dispatches #GP via IDT[0x0D] (which they installed at 0x2F:0x7744),
-  CPU reads LDT[5] (now zeros), aborts.
+- **Two follow-up fixes landed (commits 661c03c, 8e58220):**
+  - AX=0501 prefers pm_arena over MCB, so multi-block allocations
+    land above 1MB contiguous, not scattered across the MCB arena
+    in conventional memory (which would still put client data near
+    our 0x104000 LDT within their extended-limit selector).
+  - pm_alloc now zero-fills via mem_writed (fast enough not to
+    desync dosbox's timer/IRET bookkeeping, unlike the old
+    byte-at-a-time attempt).  DJGPP assumes zeroed allocations.
+- Runs millions of CPU instructions in go32+COFF code before now
+  hitting a different class of failure: RETF from client code at
+  0x002F:0x7856 pops selector 0x0017 (a DS-type LDT entry) as
+  new CS, `"RET from illegal descriptor type 0x12"`.  The client
+  is popping a struct field it treats as a return-address from
+  what looks like a DJGPP exception-handler frame; the push
+  sequence (`push [ebx+4]; push [ebx+0x2a]; ...; retf`) suggests
+  either DPMI frame-format mismatch OR some earlier corruption
+  that left the struct in an invalid state.  Non-obvious to debug
+  without DJGPP source — but no longer a host-memory-corruption
+  class, so further work is purely DPMI-semantic tuning.
 
 **Why this is hard to fix without paging:** DPMI clients legitimately
 point their own selectors at arbitrary linear addresses.  With no
