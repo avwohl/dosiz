@@ -116,12 +116,30 @@ is functional under our DPMI host.
 1. **First real fault.**  Happens at 0x002f:0x7c29, which is DJGPP's
    `__dpmi_int` LEAVEP epilogue -- specifically `popl %ss` (pops a
    saved SS pushed at function entry before the INT 31h AX=0300 call).
-   If the popped value is 0 (null selector), `mov ss` raises #GP(0)
-   with err=0xF4.  Something between `pushl %ss` and `popl %ss` is
-   corrupting that saved SS slot; our AX=0300 mode-switch is the most
-   likely suspect.  (Found by reading /tmp/djsrc/src/libc/dpmi/api/
-   d0300_z.S: `pushl %ss; ... DPMI(0x0300); ... LEAVEP(... popl %ss;
-   popl %es)`.)
+   (Source: /tmp/djsrc/src/libc/dpmi/api/d0300_z.S:
+   `pushl %ss; ... DPMI(0x0300); ... LEAVEP(... popl %ss; popl %es)`,
+   where the macro LEAVEP is from /tmp/djgpp/include/libc/asmdefs.h.)
+
+   Err code = 0xF4.  Decoded: EXT=0, IDT=0, TI=1 (LDT), idx=30.  So
+   the `popl %ss` is trying to load LDT[30] (a selector that isn't
+   allocated) into SS.  The PUSHED value should have been 0x0037
+   (client's DS = SS, since DJGPP's crt0.S does `movw %ds, %dx; movw
+   %dx, %ss` at line 317 during stack setup).  Something corrupted
+   the pushed value on the stack to 0xF4 between `pushl %ss` and
+   `popl %ss`.  The only code that runs between them is our AX=0300
+   (simulate real-mode interrupt) implementation, which does the
+   RM round-trip via CALLBACK_RunRealInt.  Likely culprits:
+     (a) AX=0300 handler modifies client's outer SS:ESP slot in the
+         ring-change frame somehow, so the IRETD pops wrong ESP.
+     (b) Something during the RM phase writes to memory at the
+         client's stack linear address (stack_base + ESP - 4).
+     (c) Our CPU_SetSegGeneral(ss, saved_ss) after the RM call
+         accidentally changes the CLIENT's stack, not our ring-0
+         stack.
+   Next-session starting point: log, for a single AX=0300 call,
+   every memory write in the range [client_outer_ss_base +
+   client_outer_esp - 16, client_outer_ss_base + client_outer_esp]
+   to pinpoint the corruption.
 
 2. **Secondary fault in exit path.**  After the handler prints the
    dump it calls `_exit(-1)` -> `__exit` -> INT 21h AH=4C.  Inside
