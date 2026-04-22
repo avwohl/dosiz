@@ -3690,8 +3690,21 @@ Bitu dosemu_int21() {
     }
 
     case 0x42: {  // Seek handle BX; CX:DX = offset, AL = whence (0,1,2).
-      auto it = s_handles.find(reg_bx);
-      if (it == s_handles.end()) { return_error(0x06); break; }
+      int host_fd;
+      HostHandle *hi = nullptr;
+      if (reg_bx <= 4) {
+        // Standard handles: GNU cat does lseek(1, 0, SEEK_CUR) to
+        // decide its output strategy.  On a pipe/tty host lseek
+        // fails with ESPIPE; pretend success with pos=0 -- the
+        // program already got char-device info from AH=44 so it
+        // knows not to treat this as a real seek.
+        host_fd = static_cast<int>(reg_bx);
+      } else {
+        auto it = s_handles.find(reg_bx);
+        if (it == s_handles.end()) { return_error(0x06); break; }
+        host_fd = it->second.fd;
+        hi = &it->second;
+      }
       int whence = SEEK_SET;
       if (reg_al == 1) whence = SEEK_CUR;
       if (reg_al == 2) whence = SEEK_END;
@@ -3704,17 +3717,21 @@ Bitu dosemu_int21() {
             (int)reg_bx, whence, (long long)off,
             (unsigned)reg_cx, (unsigned)reg_dx);
       }
-      off_t pos = ::lseek(it->second.fd, off, whence);
+      off_t pos = ::lseek(host_fd, off, whence);
       if (pos < 0) {
-        if (std::getenv("DOSEMU_OPEN_TRACE")) {
-          std::fprintf(stderr, "[seek] -> errno=%d (%s)\n", errno, strerror(errno));
+        if (reg_bx <= 4) {
+          pos = 0;  // non-seekable stdio: report position 0, success
+        } else {
+          if (std::getenv("DOSEMU_OPEN_TRACE")) {
+            std::fprintf(stderr, "[seek] -> errno=%d (%s)\n", errno, strerror(errno));
+          }
+          return_error(0x19);
+          break;
         }
-        return_error(0x19);
-        break;
       }
       reg_ax = static_cast<uint16_t>(pos & 0xFFFF);
       reg_dx = static_cast<uint16_t>((pos >> 16) & 0xFFFF);
-      it->second.read_pending = -1;  // invalidate text-mode read buffer
+      if (hi) hi->read_pending = -1;  // invalidate text-mode read buffer
       set_cf(false);
       return CBRET_NONE;
     }
@@ -3970,10 +3987,20 @@ Bitu dosemu_int21() {
       // it silently.  DJGPP's fstat() calls this as part of its
       // non-SFT fallback to fill in st_mtime.
       if (reg_al == 0x00) {
-        auto it = s_handles.find(reg_bx);
-        if (it == s_handles.end()) { return_error(0x06); break; }
+        // Standard handles (stdin/stdout/stderr) aren't in s_handles
+        // but programs like GNU cat fstat() them to classify stdout
+        // as regular-file vs char-device vs pipe.  Return "now" so
+        // they don't spuriously fail with EBADF.
         struct stat st;
-        if (::fstat(it->second.fd, &st) < 0) { return_error(0x05); break; }
+        int host_fd;
+        if (reg_bx <= 4) {
+          host_fd = static_cast<int>(reg_bx);
+        } else {
+          auto it = s_handles.find(reg_bx);
+          if (it == s_handles.end()) { return_error(0x06); break; }
+          host_fd = it->second.fd;
+        }
+        if (::fstat(host_fd, &st) < 0) { return_error(0x05); break; }
         struct tm *tm = ::localtime(&st.st_mtime);
         if (!tm) { return_error(0x05); break; }
         // DOS packed time: bits 15-11 hour, 10-5 min, 4-0 sec/2.

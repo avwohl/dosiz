@@ -55,3 +55,6 @@ make                    # build dosemu if not already
 | BANNER      | real third-party DJGPP tool (banner.exe, 2005)       |
 | GREP        | real GNU grep 2.28 (grep228b from delorie.com)       |
 | DIFF        | real GNU diff (dif37b from delorie.com) — text-mode read regression gate |
+| CAT         | real GNU cat (txt20b) — std-handle lseek/fstat regression gate |
+| SED         | real GNU sed 4.8 (sed48b) — regex substitution             |
+| SORT        | real GNU sort (txt20b) — buffered I/O + qsort              |

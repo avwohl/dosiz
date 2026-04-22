@@ -145,6 +145,56 @@ else
     fail=$((fail + 1))
 fi
 
+# GNU cat (coreutils / txt20b).  cat probes stdout with fstat +
+# lseek(fd=1, 0, SEEK_CUR) to classify it; the fix of the day was
+# handling std-handle lseek gracefully (return pos=0 on ESPIPE
+# rather than EBADF).  Regression gate for that.
+cdir=$(mktemp -d)
+cp build/dosemu tests/CAT.EXE "$cdir/"
+printf "banana\napple\ncherry\n" > "$cdir/in.txt"
+(cd "$cdir" && DOSEMU_DPMI_RING3=1 ./dosemu CAT.EXE in.txt 2>/dev/null) > "$cdir/out" && crc=$? || crc=$?
+cgot=$(tr -d '\r' < "$cdir/out")
+rm -rf "$cdir"
+if [[ "$crc" == "0" && "$cgot" == "banana"$'\n'"apple"$'\n'"cherry" ]]; then
+    printf "  %-12s PASS\n" "CAT"
+    pass=$((pass + 1))
+else
+    printf "  %-12s FAIL (rc=%s out=%q)\n" "CAT" "$crc" "$cgot"
+    fail=$((fail + 1))
+fi
+
+# GNU sed 4.8 (sed48b).  's/X/Y/' substitution -- exercises the
+# same std-handle + disk-read paths as cat but with regex work.
+sdir=$(mktemp -d)
+cp build/dosemu tests/SED.EXE "$sdir/"
+printf "hello world\nfoo bar\nhello again\n" > "$sdir/in.txt"
+(cd "$sdir" && DOSEMU_DPMI_RING3=1 ./dosemu SED.EXE 's/hello/HOWDY/' in.txt 2>/dev/null) > "$sdir/out" && src=$? || src=$?
+sgot=$(tr -d '\r' < "$sdir/out")
+rm -rf "$sdir"
+if [[ "$src" == "0" && "$sgot" == *"HOWDY world"* && "$sgot" == *"HOWDY again"* ]]; then
+    printf "  %-12s PASS\n" "SED"
+    pass=$((pass + 1))
+else
+    printf "  %-12s FAIL (rc=%s out=%q)\n" "SED" "$src" "$sgot"
+    fail=$((fail + 1))
+fi
+
+# GNU sort (coreutils / txt20b).  Alphabetic sort -- verifies
+# buffered I/O + qsort work end-to-end.
+odir=$(mktemp -d)
+cp build/dosemu tests/SORT.EXE "$odir/"
+printf "banana\napple\ncherry\nbanana\n" > "$odir/in.txt"
+(cd "$odir" && DOSEMU_DPMI_RING3=1 ./dosemu SORT.EXE in.txt 2>/dev/null) > "$odir/out" && orc=$? || orc=$?
+ogot=$(tr -d '\r' < "$odir/out")
+rm -rf "$odir"
+if [[ "$orc" == "0" && "$ogot" == "apple"$'\n'"banana"$'\n'"banana"$'\n'"cherry" ]]; then
+    printf "  %-12s PASS\n" "SORT"
+    pass=$((pass + 1))
+else
+    printf "  %-12s FAIL (rc=%s out=%q)\n" "SORT" "$orc" "$ogot"
+    fail=$((fail + 1))
+fi
+
 echo ""
 echo "  ${pass} passed, ${fail} failed"
 exit "$fail"
