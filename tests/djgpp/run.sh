@@ -385,6 +385,38 @@ else
     fail=$((fail + 1))
 fi
 
+# GNU seq (shellutils).  Generates integer sequence to stdout --
+# tests argv-as-numbers + AH=40 stdout writes.
+seqout=$(./build/dosemu tests/SEQ.EXE 1 5 2>/dev/null | tr -d '\r' | tr '\n' ',')
+if [[ "$seqout" == "1,2,3,4,5," ]]; then
+    printf "  %-12s PASS\n" "SEQ"
+    pass=$((pass + 1))
+else
+    printf "  %-12s FAIL (out=%q)\n" "SEQ" "$seqout"
+    fail=$((fail + 1))
+fi
+
+# GNU factor (shellutils).  Prime factorization of 42 = 2*3*7.
+# Exercises argv parsing, simple arithmetic, and formatted output.
+fout=$(./build/dosemu tests/FACTOR.EXE 42 2>/dev/null | tr -d '\r')
+if [[ "$fout" == "42: 2 3 7" ]]; then
+    printf "  %-12s PASS\n" "FACTOR"
+    pass=$((pass + 1))
+else
+    printf "  %-12s FAIL (out=%q)\n" "FACTOR" "$fout"
+    fail=$((fail + 1))
+fi
+
+# GNU basename (shellutils).  Strips directory from a DOS path.
+bnout=$(./build/dosemu tests/BASENAME.EXE "C:\\TESTS\\DJ_WRITE.EXE" 2>/dev/null | tr -d '\r')
+if [[ "$bnout" == "DJ_WRITE.EXE" ]]; then
+    printf "  %-12s PASS\n" "BASENAME"
+    pass=$((pass + 1))
+else
+    printf "  %-12s FAIL (out=%q)\n" "BASENAME" "$bnout"
+    fail=$((fail + 1))
+fi
+
 echo ""
 echo "  ${pass} passed, ${fail} failed"
 exit "$fail"

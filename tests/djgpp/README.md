@@ -69,3 +69,6 @@ make                    # build dosemu if not already
 | BC          | real GNU bc 1.07 (bc1071b) — piped stdin expression eval    |
 | M4          | real GNU m4 1.4.19 (m4-1419b) — macro-expansion pipeline   |
 | FLEX        | real GNU flex 2.5.4 (flx254b) — dup2 of output onto stdout |
+| SEQ         | real GNU seq (shl2011b) — argv-as-numbers + stdout       |
+| FACTOR      | real GNU factor (shl2011b) — prime factorization        |
+| BASENAME    | real GNU basename (shl2011b) — DOS path manipulation    |
