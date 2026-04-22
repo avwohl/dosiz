@@ -5199,10 +5199,12 @@ bool build_env_block(const std::string &program_path) {
   // the basename wouldn't find programs in subdirectories.
   std::string argv0 = "C:\\";
   std::string rel = program_path;
-  // Strip leading "./" or "/" prefixes; forward slashes become
-  // backslashes for DOS convention.
+  // Strip a leading "./" (relative) or "/" (absolute) -- we're joining
+  // onto "C:\" which already has the root backslash.
   if (rel.size() >= 2 && rel[0] == '.' && (rel[1] == '/' || rel[1] == '\\'))
     rel.erase(0, 2);
+  else if (!rel.empty() && (rel[0] == '/' || rel[0] == '\\'))
+    rel.erase(0, 1);
   for (auto &c : rel) {
     if (c == '/') c = '\\';
     else c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
