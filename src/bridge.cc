@@ -4804,6 +4804,35 @@ Bitu dosemu_int21() {
       break;
     }
 
+    case 0x58: {  // Get/Set Memory Allocation Strategy / UMB link state.
+      // DJGPP startup fires AH=58 AL=00 (get strategy) as part of
+      // its libc init.  Returning error makes it fall back silently,
+      // but reporting "first fit" (0) is more truthful.  Set (AL=01)
+      // and UMB ops (AL=02/03) are accepted silently.
+      switch (reg_al) {
+        case 0x00: reg_ax = 0x0000; set_cf(false); return CBRET_NONE; // first-fit
+        case 0x01: set_cf(false);   return CBRET_NONE;                // set strategy (no-op)
+        case 0x02: reg_al = 0;      set_cf(false); return CBRET_NONE; // UMBs unlinked
+        case 0x03: set_cf(false);   return CBRET_NONE;                // set UMB link (no-op)
+      }
+      return_error(0x01);
+      break;
+    }
+
+    case 0x71: {
+      // AH=71 is the DOS LFN (Long File Name) API.  DJGPP's libc
+      // wraps every LFN call with a "was LFN available?" check:
+      //   if (AX == 0x7100) fall back to SFN (AH=0x3C etc.)
+      //   else if (CF=1) report error.
+      // Returning plain AX=1 makes DJGPP think the file op really
+      // failed (EINVAL) and it never tries the SFN version.  By
+      // returning AX=0x7100 we tell DJGPP "LFN not supported" --
+      // and it retries with the short-filename API we do handle.
+      reg_ax = 0x7100;
+      set_cf(true);
+      return CBRET_NONE;
+    }
+
     default:
       // Unknown sub-function.  Log once per distinct AH to stderr for
       // debugging, then return the DOS "invalid function" error so the
@@ -4817,20 +4846,7 @@ Bitu dosemu_int21() {
                      "invalid-function, program continues\n",
                      reg_ah, reg_al, reg_bx, reg_cx, reg_dx);
       }
-      if (reg_ah == 0x71) {
-        // AH=71 is the DOS LFN (Long File Name) API.  DJGPP's libc
-        // wraps every LFN call with a "was LFN available?" check:
-        //   if (AX == 0x7100) fall back to SFN (AH=0x3C etc.)
-        //   else if (CF=1) report error.
-        // Returning plain AX=1 makes DJGPP think the file op really
-        // failed (EINVAL) and it never tries the SFN version.  By
-        // returning AX=0x7100 we tell DJGPP "LFN not supported" --
-        // and it retries with the short-filename API we do handle.
-        reg_ax = 0x7100;
-        set_cf(true);
-      } else {
-        return_error(0x01);  // invalid function
-      }
+      return_error(0x01);
       break;
   }
   return CBRET_NONE;
