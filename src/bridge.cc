@@ -1126,11 +1126,13 @@ Bitu dosemu_dpmi_entry() {
     const uint32_t es_base  = SegValue(es) * 16u;
     if (std::getenv("DOSEMU_DPMI_TRACE")) {
       std::fprintf(stderr,
-          "[dpmi-entry] cs=%04x ip=%04x ds=%04x ss=%04x es=%04x sp=%04x -> bases "
+          "[dpmi-entry] cs=%04x ip=%04x ds=%04x ss=%04x es=%04x fs=%04x gs=%04x sp=%04x -> bases "
           "cs=%08x ds=%08x ss=%08x es=%08x\n",
           (unsigned)client_cs, (unsigned)client_ip,
           (unsigned)SegValue(ds), (unsigned)SegValue(ss),
-          (unsigned)SegValue(es), (unsigned)reg_sp,
+          (unsigned)SegValue(es),
+          (unsigned)SegValue(fs), (unsigned)SegValue(gs),
+          (unsigned)reg_sp,
           cs_base, ds_base, ss_base, es_base);
     }
 

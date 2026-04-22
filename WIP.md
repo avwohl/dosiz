@@ -73,7 +73,57 @@ different bug that was previously masked -- with LDT[4] aliasing
 the IVT, go32-v2 was reading random IVT bytes that happened to keep
 the state machine alive until libc's movedata.  With the correct
 alias, an earlier code path in the stub now takes a real fault.
-That fault is the next investigation item.
+
+**Further investigation (same session, 2026-04-22)**: chased the
+`err=0x400` fault through CPU tracing + .data probes.  The fault is a
+`pop ss` at stubinfo offset 0x22 (executing the `ds_selector` field as
+the `pop ss` opcode 0x17) because control lands there via a
+`jmp far cs:[0xe880]` in `___exit`, where `[cs:0xe880]` = `(off=0,
+sel=0x000f)`.  Target CS:0 is the stubinfo data at linear 0x1100, not
+the intended RM-switch stub code.
+
+Root cause chain:
+
+1. **`__stubinfo` = NULL at runtime.**  The only code path that writes
+   `__stubinfo` (at crt0.S:267, `movl %eax, __stubinfo` after
+   `call ___sbrk`) does run, but sbrk returns 0 because
+   `__what_size_app_thinks_it_is` (at 0xe8d6) starts at 0 instead of
+   its .data-file value (0x14f78).
+
+2. **.data not fully loaded into PM memory.**  Probes at fault time
+   show:
+   - `*0x12e810 = 0x1273c` (matches expected 0x12734+8 after a runtime
+     IMMEDIATE-mov write in crt0.S line 225 -- so .data wasn't really
+     read; the runtime instruction supplied the value).
+   - `*0x12e814 = 0` (expected 0x12 from .data -- missing).
+   - `*0x12e81c = 0` (expected 0x270 from .data -- missing).
+   - `*0x12e8d6 = 0x80858` (runtime-accumulated from 0, never had the
+     initial 0x14f78).
+
+3. **INT 21h trace confirms go32-v2 skipped the .data read.**
+   The stub's trace shows AH=3D (open) -> AH=3F CX=6 (MZ magic) ->
+   AH=42 DX=0x800 (seek COFF) -> AH=3F CX=0xA8 (COFF header) ->
+   AX=0300 sim-RM-INT -> AH=42 EDX=0x1800 (seek .text) -> AH=3F
+   ECX=0xD000 (read .text, ~52KB) -> **AH=3E close**.
+
+   Per stub.asm line 467-470, there should be a SECOND read_section
+   call for .data (and then BSS zero-fill, file close, DOS mem free).
+   The trace jumps straight to close after .text.  Something in
+   read_section is erroring out on .text's path and taking a
+   short-circuit return that skips .data.
+
+**For next session**: instrument `read_section` execution via CPU
+trace, or add verbose logging to our AX=0300/0301/0302 handlers to
+see what error go32-v2 encounters.  Likely candidates:
+- Our AH=42 (seek) returning a wrong DX:AX file-position on success.
+- Our AH=3F (read) returning an incorrect byte count in AX on
+  partial-buffer reads (the stub's transfer buffer is 60KB but
+  .text is 52KB, so it should fit in one read).
+- A subtle INT 31h AX=0300 (simulate RM INT) bug around register
+  preservation after the RM call.
+
+Once .data loads, `__stubinfo` will get a valid pointer, and the rest
+of DJGPP libc's startup should chain correctly.
 
 ## Watchpoint data point on [DS:0x19370] (2026-04-22, arm64 Mac)
 
