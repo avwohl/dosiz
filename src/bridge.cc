@@ -866,6 +866,12 @@ uint16_t s_int31_cb32_off  = 0;
 uint16_t s_le_exc_cb16_off = 0;    // CB_IRET  shared handler
 uint16_t s_le_exc_cb32_off = 0;    // CB_IRETD shared handler
 
+// Forward decls for LDT helpers defined deeper in the file, used by
+// dpmi_enter_pm_mode's ring-3 starter-set.
+void write_ldt_descriptor(int idx, uint32_t base, uint32_t limit,
+                          uint8_t access, bool bits32 = false);
+inline void ldt_set(uint16_t idx, bool v);
+
 void write_gdt_descriptor(int idx, uint32_t base, uint32_t limit,
                           uint8_t access, bool bits32 = false) {
   const PhysPt p = GDT_SEG * 16u + idx * 8u;
@@ -1061,42 +1067,66 @@ Bitu dosemu_dpmi_entry() {
   // Our existing fixtures run at ring 0 and would need updating to
   // use this path -- opt-in for now.
   if (bits32 && std::getenv("DOSEMU_DPMI_RING3")) {
-    // Save the original client IP from the far-call frame.  The CS
-    // slot at [SP+2] gets overwritten below; IP at [SP] stays.
+    // CWSDPMI-style ring-3 entry: allocate LDT slots for the client's
+    // CS/DS/SS/ES aliases (not GDT slots -- real DPMI hosts put
+    // client selectors in the LDT, so stub code that checks TI bit
+    // gets the expected answer).  Slots 1..4 are a conventional
+    // "starter set" per CWSDPMI's l_acode / l_adata / l_apsp.
     const uint16_t client_ip = mem_readw(SegValue(ss) * 16u + reg_sp);
-    const uint16_t client_ss = SegValue(ss);
+    const uint16_t cs_base  = client_cs  * 16u;
+    const uint16_t ds_base  = SegValue(ds) * 16u;
+    const uint16_t ss_base  = SegValue(ss) * 16u;
+    const uint16_t es_base  = SegValue(es) * 16u;
 
     CPU_SET_CRX(0, 0x00000001);      // PE=1
     CPU_LLDT(PM_LDT_SEL);
-    CPU_LTR(PM_TSS_SEL);             // TSS active for inter-ring switches
-    s_client_cpl = 3;                // LDT selectors get RPL=3
+    CPU_LTR(PM_TSS_SEL);
+    s_client_cpl = 3;
 
-    // Switch to the ring-0 scratch stack (PM_CB_STACK, 4KB segment)
-    // so we can build an IRETD frame without clobbering the client's
-    // RM stack.  This is the same stack TSS.ESP0/SS0 point at, which
-    // the CPU will also use when interrupts fire from ring 3.
+    // Zero-init LDT bitmap + reserve slots 1..4 for starter-set.
+    for (auto &b : s_ldt_in_use) b = 0;
+    s_ldt_in_use[0] |= 0x01;   // slot 0 reserved (null)
+    for (auto &c : s_seg2desc_cache) c = 0;
+    for (uint32_t off = 0; off < LDT_BYTES; ++off)
+      mem_writeb(LDT_SEG * 16u + off, 0);
+    // CWSDPMI convention (CONTROL.C ~L469): initial client CS is
+    // 16-bit regardless of AX=1 entry.  Stubs that request 32-bit
+    // DPMI still start in 16-bit code and far-jump to their 32-bit
+    // section after DPMI setup.  Giving a 32-bit CS here causes the
+    // decoder to misinterpret the stub's 16-bit setup code and hit
+    // a spurious #UD (observed with DJGPP go32 stub at offset 0x28b).
+    // Slot 1: client code  (DPL=3, code readable, 16-bit) -- 0xFA access
+    write_ldt_descriptor(1, cs_base, 0xFFFF, 0xFA, false);
+    ldt_set(1, true);
+    // Slot 2: client data  (DPL=3, data r/w) -- 0xF2 access
+    // Data selectors match the AX=1 bit (32-bit if 32-bit PM).
+    write_ldt_descriptor(2, ds_base, 0xFFFF, 0xF2, true);
+    ldt_set(2, true);
+    // Slot 3: client stack (DPL=3, data r/w, 32-bit for big stack)
+    write_ldt_descriptor(3, ss_base, 0xFFFF, 0xF2, true);
+    ldt_set(3, true);
+    // Slot 4: client ES/PSP (DPL=3, data r/w, 16-bit)
+    write_ldt_descriptor(4, es_base, 0xFFFF, 0xF2);
+    ldt_set(4, true);
+    const uint16_t ldt_cs = (1 << 3) | 0x04 | 0x03;   // 0x0F
+    const uint16_t ldt_ds = (2 << 3) | 0x04 | 0x03;   // 0x17
+    const uint16_t ldt_ss = (3 << 3) | 0x04 | 0x03;   // 0x1F
+    const uint16_t ldt_es = (4 << 3) | 0x04 | 0x03;   // 0x27
+
+    // Stage IRETD frame on ring-0 scratch stack.
     CPU_SetSegGeneral(ss, PM_CB_STACK);
-    reg_esp = PM_CB_STACK_SIZE - 32;      // offset within 4KB seg
+    reg_esp = PM_CB_STACK_SIZE - 32;
+    CPU_SetSegGeneral(ds, ldt_ds);
+    CPU_SetSegGeneral(es, ldt_es);
 
-    // Pre-load DS/ES with ring-3 selectors.
-    CPU_SetSegGeneral(ds, PM_DS3_SEL);
-    CPU_SetSegGeneral(es, PM_ES3_SEL);
-
-    // Build IRETD frame with CPL change (0->3 pops 20 bytes):
-    //   [ESP+0]  EIP       = client_ip
-    //   [ESP+4]  CS        = PM_CS3_SEL (RPL=3)
-    //   [ESP+8]  EFLAGS    = 0x0002 (reserved-bit-1 only; IF cleared)
-    //   [ESP+12] ESP       = client's ring-3 ESP (top of SS3 segment)
-    //   [ESP+16] SS        = PM_SS3_SEL (RPL=3)
     const PhysPt frame = SegPhys(ss) + reg_esp;
     mem_writed(frame + 0,  client_ip);
-    mem_writed(frame + 4,  PM_CS3_SEL);
+    mem_writed(frame + 4,  ldt_cs);
     mem_writed(frame + 8,  0x00000002u);
-    mem_writed(frame + 12, 0xFFFC);                     // ESP3 (offset)
-    mem_writed(frame + 16, PM_SS3_SEL);
-    (void)client_ss;                                    // currently unused
+    mem_writed(frame + 12, 0xFFFC);
+    mem_writed(frame + 16, ldt_ss);
 
-    CPU_IRET(true, 0);                 // pops to ring 3
+    CPU_IRET(true, 0);
     reg_ax = 0;
     return CBRET_NONE;
   }
@@ -1777,7 +1807,7 @@ inline bool selector_is_valid(uint16_t sel) {
 // write_gdt_descriptor; used by AX=0000 (installs a present-but-empty
 // slot) and AX=0002 (installs a real-mode-segment alias).
 void write_ldt_descriptor(int idx, uint32_t base, uint32_t limit,
-                          uint8_t access, bool bits32 = false) {
+                          uint8_t access, bool bits32) {
   const PhysPt p = LDT_SEG * 16u + idx * 8u;
   mem_writeb(p + 0, limit & 0xFF);
   mem_writeb(p + 1, (limit >> 8) & 0xFF);
