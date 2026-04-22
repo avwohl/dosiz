@@ -1163,7 +1163,14 @@ Bitu dosemu_dpmi_entry() {
     const PhysPt frame = SegPhys(ss) + reg_esp;
     mem_writed(frame + 0,  client_ip);
     mem_writed(frame + 4,  ldt_cs);
-    mem_writed(frame + 8,  0x00000002u);
+    // EFLAGS with IOPL=3 + reserved bit 1.  DJGPP and other DPMI
+    // clients sprinkle CLI/STI throughout their libc (e.g. exceptn.S
+    // line 1ACC, disabling interrupts before restoring FS/GS).  At
+    // ring-3 with IOPL<3 those trigger #GP; CWSDPMI avoids this by
+    // running clients with IOPL=3 so the opcodes are legal but
+    // (because paging/segmentation still isolates) have no effect on
+    // real interrupt delivery.  Mimic that here: EFLAGS = 0x3002.
+    mem_writed(frame + 8,  0x00003002u);
     mem_writed(frame + 12, 0xFFFC);
     mem_writed(frame + 16, ldt_ss);
 
@@ -2166,6 +2173,17 @@ Bitu dosemu_int31() {
 
     case 0x0001: {  // Free LDT descriptor
       // Input: BX = selector.  Rejects GDT selectors (TI=0) and slot 0.
+      //
+      // Per DPMI spec the host may or may not clear the descriptor
+      // bytes on free.  CWSDPMI leaves them intact and just marks
+      // the slot as available for re-allocation; DJGPP's runtime
+      // relies on that -- it frees selectors during cleanup and then
+      // re-uses them (loading DS with the freed value as part of a
+      // state-restore path) without re-issuing AX=0007/0008/0009.
+      // If we had zeroed the descriptor (P=0, etc.), that reload
+      // would #GP.  Match CWSDPMI: update only the in-use bitmap
+      // and the seg-to-descriptor cache, leave the descriptor
+      // bytes alone.
       if (!(reg_bx & 0x4) || !selector_is_valid(reg_bx)) {
         reg_ax = 0x8022; set_cf(true); return CBRET_NONE;
       }
@@ -2174,7 +2192,6 @@ Bitu dosemu_int31() {
         reg_ax = 0x8022; set_cf(true); return CBRET_NONE;
       }
       ldt_set(idx, false);
-      write_ldt_descriptor(idx, 0, 0, 0);   // mark not-present
       // Drop any segment-to-descriptor cache entry that aliased this idx.
       for (uint32_t s = 0; s < 65536; ++s) {
         if (s_seg2desc_cache[s] == idx) s_seg2desc_cache[s] = 0;
