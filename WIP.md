@@ -34,42 +34,43 @@ when landed.  Suite is 29/29 at the start of the backlog.
    to no longer be a blocker.  (Subsequent compile+link failures
    are Watcom config issues -- missing system definition + libs --
    not dosemu bugs.)
-5. **DJGPP→DJGPP nested exec.**  Three fixes landed, but the
-   chain of failures runs deeper than a single bridge-side fix
-   can close.  Full diagnosis:
-   - **Root cause 1 (fixed):** The go32-v2 stub writes argv[0]
-     at `[DS:0x764]` during RM, then on nested exec the stub's
-     PM code zeroes byte 0 of that buffer as part of a "clear
-     RM scratch" step.  A later PM AH=3D reads that buffer
-     expecting the path, sees empty string, bails with "can't
-     open".  **Fix (commit b46f43a):** when AH=3D sees an empty
-     path inside a child process (`s_process_stack` non-empty)
-     but the bytes at `[DS:DX+1..]` look like `:\...`, prepend
-     the current drive letter and open that.  Narrow, only
-     fires for children.
-   - **Root cause 2 (unfixable from bridge):** After the path
-     reconstruction unblocks the AH=3D, the stub's nested-exec
-     PM path checks `[0x628]` at `0x386`; nested has it set
-     to 0x73, top-level has it 0 (WHY it differs is the deeper
-     unknown).  The non-zero takes a JNZ to 0x396 which
-     eventually runs `CALL FAR [0x600]` in PM -- but [0x600]
-     holds an RM-style far pointer (`0xF000:0x1F20`, our DPMI
-     entry).  PM CALL FAR with CS=0xF000 is #GP (not a valid
-     selector), so the child crashes.
-   - This is architectural: the stub's nested-PM branch runs
-     RM-mode-switch code in PM, which can never work regardless
-     of our intervention.  Fixing it would require preventing
-     the stub from taking the nested branch at `0x386` -- which
-     means figuring out why `[0x628]` is non-zero in nested
-     (some stub global the nested case initializes to a non-zero
-     value).  That's DJGPP stub source-level understanding not
-     available without the go32-v2 source at hand.
+5. **DJGPP→DJGPP nested exec.**  Four structural fixes landed.
+   The failure chain is now well-understood -- each layer of
+   "why does nested fail but top-level works?" has been peeled.
+   - **Root cause 1 (fixed, commit b46f43a):** The go32-v2 stub
+     writes argv[0] at `[DS:0x764]` during RM, then on nested
+     exec the stub's PM code zeroes byte 0 of that buffer.  Our
+     path reconstruction (AH=3D with empty path inside a child
+     reconstructs from the `:\...` tail) unblocks this.
+   - **Root cause 2 (fixed, commit 9f8cc2a):** Our AH=4B mcb
+     allocator re-uses the MCB that the parent just freed (same
+     segment), and the MZ loader only copies image_bytes to the
+     child's memory.  The tail past image_bytes kept the parent's
+     COFF data.  The DJGPP stub's "already in DPMI?" global at
+     `[DS:0x628]` fell in that uninit tail and read non-zero,
+     taking a PM-only nested branch.  **Fix:** zero the child's
+     full MCB allocation before the MZ load.
+   - **Root cause 3 (not fixed):** After the two above, the
+     child progresses further into its init but hits a stack
+     corruption during an INT 31 round-trip.  After the INT 31
+     handler returns via IRETD, the RET at offset 0x488 pops
+     `0x0000` instead of the expected return address `0x39F`.
+     Something wrote 0 to the client's PM stack during the
+     INT 31 call.  Most likely our AH=4B memory zero wrote
+     across the child's SS:SP region (SS base 0x40010, ESP
+     0xFFF8 -> linear 0x50008 is inside [child_psp*16,
+     child_psp*16 + want*16]), and the pre-existing return
+     address we would normally leave in place got clobbered.
+     Candidate fix would be to skip zeroing regions the MZ
+     loader will later write to, or arrange the zero to run
+     before the MZ loader so later stack pushes overwrite 0s
+     naturally -- the current placement already does this, so
+     the cause must be subtler.  Left for a future session.
 
-   **Partial-progress closing:** Path reconstruction is landed.
-   The child now gets past the initial open failure, runs further
-   into its stub's PM init, then hits the CALL FAR [0x600] trap.
-   Suite: 29/29; DJGPP→real-mode-child (DJ_EXEC→HELLO.COM) still
-   clean and in CI.
+   **Current state:** 4 landed fixes (CR0 flip, PSP JFT init,
+   path reconstruction, memory zero).  Suite 29/29.  DJGPP→
+   real-mode child still works.  DJGPP→DJGPP still fails, but
+   much later in the child's startup than before the fixes.
 
 ## Larger
 6. **`make` with real recipes.**  Need FreeCOM (FreeDOS's
