@@ -218,12 +218,16 @@ when landed.  Suite is 29/29 at the start of the backlog.
      char-device-at-EOF check `(attr & 0xc0) == 0x80`.
    - Added FREECOM regression gate to the test suite (31/31).
 
-   Remaining: spawning external programs through FreeCOM faults
-   with "LE client PM exception" -- the spawned DJGPP child's PM
-   entry path isn't coming back through the FreeCOM parent's
-   resume cleanly (not the same #5 code path -- FreeCOM parent
-   is real-mode-only, so the AH=4B restore is simpler).  Needs
-   its own session to untangle.
+   Remaining: spawning external programs through FreeCOM *returns
+   cleanly from AH=4B* now, but FreeCOM's REPL falls silent after
+   the child exits -- no new prompt, INT 21 trace stops after
+   AH=48 BX=0 (query-free-memory idiom), and PIC port writes fire
+   in the idle window.  The old "LE PM exception" failure mode is
+   gone (re-checked 2026-04-23).  Working theory: FreeCOM is the
+   XMS_Swap build and the swap-back path after the child is
+   leaving FreeCOM in a half-swapped state.  Applies equally to
+   trivial .COM children (HELLO.COM) and DJGPP children
+   (DJ_WRITE.EXE) -- not child-specific.  Needs its own session.
 7. ~~**AH=4B AL=5** (Set execution state -- for debuggers).~~
    Stubbed as no-op success.  DOS 5+ IO.SYS is effectively the
    only caller in the wild; programs that test-probe the API are
