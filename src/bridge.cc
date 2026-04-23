@@ -4725,6 +4725,15 @@ Bitu dosemu_int21() {
       uint8_t saved_ldt_in_use[sizeof(s_ldt_in_use)];
       std::memcpy(saved_ldt_in_use, s_ldt_in_use, sizeof(s_ldt_in_use));
 
+      // Snapshot parent's PM exception handlers.  Child's libc will
+      // install its own (via DPMI AX=0203), whose selector:offset
+      // refers to child-specific memory.  After child exits that
+      // memory is freed; if parent takes a PM fault, our dispatcher
+      // would call the stale child handler and #GP on the invalid
+      // target -- recursive-fault-loop in our dispatcher.
+      ExcHandler saved_pm_exc[32];
+      std::memcpy(saved_pm_exc, s_pm_exc, sizeof(s_pm_exc));
+
       // Switch CPU to child entry state (a real-mode CS load; shim's
       // current execution will "resume" child flow via the main loop's
       // LOADIP reading these fresh values).
@@ -4759,6 +4768,9 @@ Bitu dosemu_int21() {
       for (uint32_t i = 0; i < LDT_BYTES; ++i)
         mem_writeb(LDT_BASE + i, saved_ldt[i]);
       std::memcpy(s_ldt_in_use, saved_ldt_in_use, sizeof(s_ldt_in_use));
+      // Restore parent's PM exception handlers (child's were in
+      // child-memory that's now freed).
+      std::memcpy(s_pm_exc, saved_pm_exc, sizeof(s_pm_exc));
 
       // Child exited via AH=4Ch; restore parent state.
       s_child_exit_pending = false;
