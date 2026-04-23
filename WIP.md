@@ -34,40 +34,42 @@ when landed.  Suite is 29/29 at the start of the backlog.
    to no longer be a blocker.  (Subsequent compile+link failures
    are Watcom config issues -- missing system definition + libs --
    not dosemu bugs.)
-5. **DJGPP→DJGPP nested exec.**  Two structural fixes landed
-   (CR0.PE flip on child entry, child PSP JFT init) which are
-   strictly correct but don't close the gap.  Deeper diagnosis:
-   - The DJGPP stub writes its argv[0] path at `[DS:0x764]`
-     during RM setup (same offset regardless of where the stub
-     is loaded).
-   - Between the stub's RM self-open and its later PM-mode
-     AH=3D (on the same `[DS:0x764]` address), the memory at
-     that offset gets overwritten -- empirically by the stub's
-     own stack frames / register save-restores during the extra
-     work it does when nested (more INT 21/31 round-trips than
-     top-level makes).
-   - Top-level DJGPP doesn't hit this because its stub follows
-     a shorter init path and the memory at `[DS:0x764]` is
-     never revisited.
-   - Tried: save/restore s_handles across the child (reverted --
-     DOS semantics require parent handles to pass through), PSP
-     JFT init (kept), CR0 flip (kept), PSP/env seg tracking
-     (landed earlier).  None flip the DJGPP-side init to match
-     the top-level path.
-   - Real fix probably lives inside the DJGPP stub's PM init --
-     needs either a stubinfo field we aren't populating, a
-     detection of "already in DPMI" that makes the stub skip
-     re-entry, or a path-buffer that survives the stub's stack
-     churn.  Not solvable from the bridge side without DJGPP
-     source-level understanding of what the stub is actually
-     trying to open at `[DS:0x764]` in PM and why it only takes
-     that branch in the nested case.
+5. **DJGPP→DJGPP nested exec.**  Three fixes landed, but the
+   chain of failures runs deeper than a single bridge-side fix
+   can close.  Full diagnosis:
+   - **Root cause 1 (fixed):** The go32-v2 stub writes argv[0]
+     at `[DS:0x764]` during RM, then on nested exec the stub's
+     PM code zeroes byte 0 of that buffer as part of a "clear
+     RM scratch" step.  A later PM AH=3D reads that buffer
+     expecting the path, sees empty string, bails with "can't
+     open".  **Fix (commit b46f43a):** when AH=3D sees an empty
+     path inside a child process (`s_process_stack` non-empty)
+     but the bytes at `[DS:DX+1..]` look like `:\...`, prepend
+     the current drive letter and open that.  Narrow, only
+     fires for children.
+   - **Root cause 2 (unfixable from bridge):** After the path
+     reconstruction unblocks the AH=3D, the stub's nested-exec
+     PM path checks `[0x628]` at `0x386`; nested has it set
+     to 0x73, top-level has it 0 (WHY it differs is the deeper
+     unknown).  The non-zero takes a JNZ to 0x396 which
+     eventually runs `CALL FAR [0x600]` in PM -- but [0x600]
+     holds an RM-style far pointer (`0xF000:0x1F20`, our DPMI
+     entry).  PM CALL FAR with CS=0xF000 is #GP (not a valid
+     selector), so the child crashes.
+   - This is architectural: the stub's nested-PM branch runs
+     RM-mode-switch code in PM, which can never work regardless
+     of our intervention.  Fixing it would require preventing
+     the stub from taking the nested branch at `0x386` -- which
+     means figuring out why `[0x628]` is non-zero in nested
+     (some stub global the nested case initializes to a non-zero
+     value).  That's DJGPP stub source-level understanding not
+     available without the go32-v2 source at hand.
 
-   Closing this as "can't fix from our side right now" after
-   a full session of targeted investigation.  DJGPP-under-DJGPP
-   spawning is an unusual user-facing case -- DJ_EXEC→HELLO.COM
-   covers the common "DJGPP invokes real-mode child" pattern
-   and works cleanly.
+   **Partial-progress closing:** Path reconstruction is landed.
+   The child now gets past the initial open failure, runs further
+   into its stub's PM init, then hits the CALL FAR [0x600] trap.
+   Suite: 29/29; DJGPP→real-mode-child (DJ_EXEC→HELLO.COM) still
+   clean and in CI.
 
 ## Larger
 6. **`make` with real recipes.**  Need FreeCOM (FreeDOS's
