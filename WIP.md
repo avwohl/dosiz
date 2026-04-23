@@ -34,10 +34,11 @@ when landed.  Suite is 29/29 at the start of the backlog.
    to no longer be a blocker.  (Subsequent compile+link failures
    are Watcom config issues -- missing system definition + libs --
    not dosemu bugs.)
-5. **DJGPP→DJGPP nested exec.**  Child runs end-to-end and
-   prints `dj-write=ok`.  Eight layered root causes found and
-   fixed.  Parent resume still hits a fault inside parent's
-   libc; deferred.
+5. ~~**DJGPP→DJGPP nested exec.**~~  **DONE.**  Parent spawns a
+   DJGPP child, child runs to completion, parent resumes cleanly
+   and continues past spawnlp.  Ten layered root causes found
+   and fixed (suite now 30/30, includes new DJ_DJE regression
+   gate).
    - **#5.1 (b46f43a):** Path reconstruction for empty `[DS:0x764]`.
    - **#5.2 (9f8cc2a):** Zero child MCB before MZ load.
    - **#5.3 (281e20f):** Preserve client's RM SP in dpmi_entry
@@ -60,18 +61,33 @@ when landed.  Suite is 29/29 at the start of the backlog.
      (the parent) with LDT[6] base=0x120000 (parent's correct
      base, restored from snapshot).
 
-   **Remaining:** Parent now reaches its own libc and hits a
-   #GP at eip=0x7314 (parent CS base 0x120000) with error=0x0020
-   (trying to load GDT[4] = ring-0 ES selector).  Likely the
-   parent's libc signal-handler thunk expects some CPU state
-   (TSS? FS/GS?) that's not fully restored.  Bridge-side
-   ProcessState tracks cs/ds/ss/es but not fs/gs, and doesn't
-   restore TSS.  Further investigation deferred.
+   - **#5.9 (d607b3b):** Save/restore FS and GS in ProcessState,
+     and use parent's SAVED selectors (CS/DS/SS/ES/FS/GS) via
+     CPU_SetSegGeneral on PM restore instead of hardcoded
+     starter-set values.  DJGPP's libc runs on LDT[6..8], not
+     the starter-set LDT[1..5].
+   - **#5.10 (d607b3b):** Snapshot+restore the 4KB PM_CB_STACK
+     (ring-0 callback stack) around child execution.  Parent's
+     INT 31 pushed its IRETD frame at the top of this stack;
+     child's own ring transitions overwrite it, so the outer
+     int31 callback's IRETD would pop garbage CS/EIP.
+   - **#5.11 (this commit):** `s_int_gate_bits32` must be
+     nested-safe.  The outer wrapper sets it to `true`, calls
+     the handler, and the handler's AH=4B recursively runs the
+     child which re-enters dosemu_int31_bits32.  The inner
+     wrapper's exit path resets the flag to `false`, corrupting
+     the outer wrapper's state.  Later, the outer handler's
+     `set_cf()` reads this stale flag, picks flags_off=4 (16-bit
+     gate) instead of 8 (32-bit gate), and writes the updated
+     flags word at `ss:esp+4` -- which in a 32-bit IRETD frame
+     is the CS slot, not FLAGS.  The `and ~0x0001` mask on CF
+     flipped bit 0 of outer CS from 0x37 to 0x36 (RPL=3 -> RPL=2),
+     making the IRETD drop parent to CPL=2 and immediately #GP on
+     the next `pop ss` of a DPL=3 selector.  Fix: save-and-restore
+     `s_int_gate_bits32` in both wrappers.
 
-   **Suite: 29/29.  DJGPP→HELLO.COM clean (DJ_EXEC test).
-   DJGPP→DJGPP child runs + produces correct output; parent
-   reaches its own libc post-spawn then faults on a state item
-   we're not yet tracking.**
+   **Suite: 30/30 including DJ_DJE (new regression gate for
+   DJGPP→DJGPP nested exec).**
 
 ## Larger
 6. **`make` with real recipes.**  Need FreeCOM (FreeDOS's

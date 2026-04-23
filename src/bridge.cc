@@ -3477,18 +3477,16 @@ Bitu dosemu_int31() {
             (unsigned)SegValue(cs), (unsigned)reg_eip,
             (unsigned)cpu.cr0, (unsigned)cpu.cpl,
             (unsigned)SegValue(ss), (unsigned)reg_esp);
-        // Read stack via BOTH the constexpr and SegPhys(ss) to detect
-        // any mismatch.
-        const PhysPt top_c = PM_CB_STACK_BASE + PM_CB_STACK_SIZE;
+        // Dump the IRETD frame at ring-0 SS:ESP -- this is what the
+        // int31 callback's 66 CF will pop into outer EIP/CS/EFLAGS.
         const PhysPt stk_p = SegPhys(ss) + reg_esp;
-        std::fprintf(stderr, "[simrm-exit]  INT %02x CONST ring0 top-32:", (unsigned)intnum);
-        for (int i = 32; i > 0; i -= 4)
-          std::fprintf(stderr, " %08x", (unsigned)mem_readd(top_c - i));
-        std::fprintf(stderr, "\n");
-        std::fprintf(stderr, "[simrm-exit]  INT %02x VIASP ss_base=%08x esp=%08x   EIP@%08x=%08x CS@%08x=%08x\n",
-            (unsigned)intnum, (unsigned)SegPhys(ss), (unsigned)reg_esp,
-            (unsigned)stk_p, (unsigned)mem_readd(stk_p),
-            (unsigned)(stk_p+4), (unsigned)mem_readd(stk_p+4));
+        std::fprintf(stderr, "[simrm-exit]  INT %02x frame@%08x: EIP=%08x CS=%04x EFLAGS=%08x ESP=%08x SS=%04x\n",
+            (unsigned)intnum, (unsigned)stk_p,
+            (unsigned)mem_readd(stk_p),
+            (unsigned)(mem_readd(stk_p + 4) & 0xFFFF),
+            (unsigned)mem_readd(stk_p + 8),
+            (unsigned)mem_readd(stk_p + 12),
+            (unsigned)(mem_readd(stk_p + 16) & 0xFFFF));
       }
       set_cf(false);
       return CBRET_NONE;
@@ -3602,15 +3600,23 @@ Bitu dosemu_int31() {
 Bitu dosemu_int21();
 Bitu dosemu_int31();
 Bitu dosemu_int21_bits32() {
+  // Save-and-restore pattern: a nested child DPMI call can re-enter
+  // these wrappers (via the int21 AH=4B -> child run -> child int31
+  // -> dosemu_int31_bits32 path).  The inner wrapper resetting the
+  // global to false on exit would flip the outer caller's state,
+  // making its later set_cf() pick the wrong flags offset and
+  // corrupt the ring-0 IRETD frame at PM_CB_STACK.
+  const bool prev = s_int_gate_bits32;
   s_int_gate_bits32 = true;
   Bitu r = dosemu_int21();
-  s_int_gate_bits32 = false;
+  s_int_gate_bits32 = prev;
   return r;
 }
 Bitu dosemu_int31_bits32() {
+  const bool prev = s_int_gate_bits32;
   s_int_gate_bits32 = true;
   Bitu r = dosemu_int31();
-  s_int_gate_bits32 = false;
+  s_int_gate_bits32 = prev;
   return r;
 }
 
@@ -4819,13 +4825,6 @@ Bitu dosemu_int21() {
       uint8_t saved_cb_stack[PM_CB_STACK_SIZE];
       for (uint32_t i = 0; i < PM_CB_STACK_SIZE; ++i)
         saved_cb_stack[i] = mem_readb(PM_CB_STACK_BASE + i);
-      if (dosemu::g_debug.int4b_trace) {
-        std::fprintf(stderr, "[4B cb_stack snap] top-32:");
-        for (int i = 32; i > 0; i -= 4)
-          std::fprintf(stderr, " %08x",
-              (unsigned)mem_readd(PM_CB_STACK_BASE + PM_CB_STACK_SIZE - i));
-        std::fprintf(stderr, "\n");
-      }
 
       // Switch CPU to child entry state (a real-mode CS load; shim's
       // current execution will "resume" child flow via the main loop's
@@ -4867,22 +4866,8 @@ Bitu dosemu_int21() {
       // Restore parent's PM_CB_STACK contents.  Parent's ring-3->0
       // INT 31 frame lives near the top of this stack; child's
       // ring transitions overwrote it.
-      if (dosemu::g_debug.int4b_trace) {
-        std::fprintf(stderr, "[4B cb_stack pre-restore] top-32:");
-        for (int i = 32; i > 0; i -= 4)
-          std::fprintf(stderr, " %08x",
-              (unsigned)mem_readd(PM_CB_STACK_BASE + PM_CB_STACK_SIZE - i));
-        std::fprintf(stderr, "\n");
-      }
       for (uint32_t i = 0; i < PM_CB_STACK_SIZE; ++i)
         mem_writeb(PM_CB_STACK_BASE + i, saved_cb_stack[i]);
-      if (dosemu::g_debug.int4b_trace) {
-        std::fprintf(stderr, "[4B cb_stack restored] top-32:");
-        for (int i = 32; i > 0; i -= 4)
-          std::fprintf(stderr, " %08x",
-              (unsigned)mem_readd(PM_CB_STACK_BASE + PM_CB_STACK_SIZE - i));
-        std::fprintf(stderr, "\n");
-      }
 
       // Child exited via AH=4Ch; restore parent state.
       s_child_exit_pending = false;
