@@ -245,15 +245,25 @@ when landed.  Suite is 29/29 at the start of the backlog.
      FreeCOM spawns HELLO.COM, returns to REPL, accepts another
      command.  Suite is now 37/37.
 
-   **Remaining secondary bug:** FreeCOM spawning a DJGPP child
-   (DJ_WRITE.EXE) completes through the child's AH=4C cleanly,
-   the AH=4B exit restores identical FreeCOM state (verified via
-   DOSEMU_4B_TRACE) -- but the dynrec core then aborts with
-   "illegal option in dyn_mov_seg_ev" decoding the instruction
-   at FreeCOM's resumed CS:IP.  Same 4B entry/exit values work
-   for a .COM child; the DJGPP child's PM execution must be
-   corrupting something dosbox's dynrec cares about (JIT cache
-   of FreeCOM's code block perhaps).  Needs its own session.
+   **Secondary bug now fixed too:** FreeCOM→DJGPP-child also works.
+   Two additional pieces of hidden CPU state needed to be restored on
+   AH=4B exit when parent was RM and child ran PM:
+
+   - `cpu.code.big`: DJGPP's 32-bit PM leaves it true.  Dropping to
+     RM via CR0 doesn't reset it, so the trampoline's `iret`
+     decodes as 32-bit IRETD, popping 12 bytes and assembling
+     IP=(CS<<16|IP)=garbage.  Now explicitly reset to false.
+   - `cpu.idt`: DJGPP's go32 stub `LIDT`s a private PM IDT.  RM
+     INT dispatch in dosbox reads `cpu.idt.GetBase()` (not a
+     hardcoded IVT at linear 0), so the stale PM IDT misdirects
+     every RM interrupt.  Snapshot/restore idt base+limit across
+     the nested RunMachine.  Also snapshot/restore `cpu.stack.big`
+     and its mask companions for completeness.
+
+   FC_SPAWN regression test now exercises both an RM child
+   (HELLO.COM) and a PM child (DJ_WRITE.EXE) within one FreeCOM
+   session plus a post-spawn builtin + exit.  Interactive REPL
+   fully functional.
 7. ~~**AH=4B AL=5** (Set execution state -- for debuggers).~~
    Stubbed as no-op success.  DOS 5+ IO.SYS is effectively the
    only caller in the wild; programs that test-probe the API are

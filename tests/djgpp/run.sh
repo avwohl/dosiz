@@ -123,18 +123,26 @@ else
 fi
 
 # FreeCOM spawning an external program and returning to the REPL.
-# Regression gate for the top-level MCB-at-PSP-1 fix (FreeCOM's
-# XMS_Swap build reads mcb->mcb_size to derive SwapTransientSize;
-# without a real MCB, it reads 0 and AH=48 BX=0 post-spawn is a
-# short-circuit that hangs the REPL).  Uses HELLO.COM because that
-# exercises only the RM path; the DJGPP-child case through FreeCOM
-# has a separate secondary issue tracked in WIP.
+# Regression gate for two related fixes:
+#   (a) top-level MCB-at-PSP-1  (FreeCOM's XMS_Swap build reads
+#       mcb->mcb_size to derive SwapTransientSize; without a real
+#       MCB, it reads 0 and AH=48 BX=0 post-spawn short-circuits).
+#   (b) cpu.code.big + IDT restore on AH=4B exit when a PM child
+#       (DJGPP) was spawned from an RM parent (FreeCOM).  Without
+#       these, the callback trampoline's `iret` decodes as 32-bit
+#       IRETD, or RM INT dispatch reads from the child's stale PM
+#       IDT, and the REPL crashes into garbage.
+# Exercises both an RM child (HELLO.COM) and a PM child (DJGPP
+# DJ_WRITE.EXE) within a single FreeCOM session, then a post-spawn
+# builtin + exit to verify the REPL is still alive.
 fcs_dir=$(mktemp -d)
-cp build/dosemu tests/COMMAND.COM tests/HELLO.COM "$fcs_dir/"
-fcsout=$(printf 'HELLO.COM\r\necho post-spawn-ok\r\nexit\r\n' \
-    | (cd "$fcs_dir" && timeout 8 ./dosemu COMMAND.COM 2>/dev/null) | tr -d '\r')
+cp build/dosemu tests/COMMAND.COM tests/HELLO.COM tests/DJ_WRITE.exe "$fcs_dir/"
+fcsout=$(printf 'HELLO.COM\r\nDJ_WRITE.EXE\r\necho post-spawn-ok\r\nexit\r\n' \
+    | (cd "$fcs_dir" && timeout 10 ./dosemu COMMAND.COM 2>/dev/null) | tr -d '\r')
 rm -rf "$fcs_dir"
-if echo "$fcsout" | grep -q 'post-spawn-ok' && echo "$fcsout" | grep -q 'dosemu-hello-ok'; then
+if echo "$fcsout" | grep -q 'post-spawn-ok' \
+    && echo "$fcsout" | grep -q 'dosemu-hello-ok' \
+    && echo "$fcsout" | grep -q 'dj-write=ok'; then
     printf "  %-12s PASS\n" "FC_SPAWN"
     pass=$((pass + 1))
 else

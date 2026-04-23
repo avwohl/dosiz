@@ -5031,6 +5031,18 @@ Bitu dosemu_int21() {
       for (uint32_t i = 0; i < PM_CB_STACK_SIZE; ++i)
         saved_cb_stack[i] = mem_readb(PM_CB_STACK_BASE + i);
 
+      // Snapshot IDT base/limit and stack big-mode.  A PM child (DJGPP's
+      // go32 stub) calls LIDT to point cpu.idt at its own interrupt
+      // table; if the parent is RM, all RM INTs (including the
+      // callback-trampoline IRET we're about to hit) go through
+      // cpu.idt.GetBase() rather than the hardcoded IVT at linear 0,
+      // so the stale PM IDT base misdirects every interrupt vector.
+      const PhysPt  saved_idt_base  = cpu.idt.GetBase();
+      const Bitu    saved_idt_limit = cpu.idt.GetLimit();
+      const bool    saved_stack_big = cpu.stack.big;
+      const uint32_t saved_stack_mask    = cpu.stack.mask;
+      const uint32_t saved_stack_notmask = cpu.stack.notmask;
+
       // Switch CPU to child entry state (a real-mode CS load; shim's
       // current execution will "resume" child flow via the main loop's
       // LOADIP reading these fresh values).
@@ -5111,6 +5123,24 @@ Bitu dosemu_int21() {
         SegSet16(es, restored.es);
         SegSet16(fs, restored.fs);
         SegSet16(gs, restored.gs);
+        // Child may have run 32-bit PM code (DJGPP / go32-v2),
+        // leaving cpu.code.big=true.  Dropping to RM via CR0 doesn't
+        // reset it, so the callback trampoline's `iret` (at f000:1605)
+        // would decode as a 32-bit IRETD, popping 12 bytes and
+        // loading IP=(CS<<16|IP)=garbage.  Force 16-bit decode for
+        // the RM parent's resume.  Also reset CPL=0 since RM has no
+        // privilege levels and dosbox asserts on nonzero CPL in RM.
+        cpu.code.big = false;
+        cpu.cpl = 0;
+        // Restore the RM parent's IDT and stack-big state.  DJGPP's
+        // go32 stub LIDT'd a private PM IDT during its run; leaving
+        // that in place breaks RM INT dispatch because dosbox's
+        // RealMode_Interrupt reads from cpu.idt, not linear 0.
+        cpu.idt.SetBase(saved_idt_base);
+        cpu.idt.SetLimit(saved_idt_limit);
+        cpu.stack.big = saved_stack_big;
+        cpu.stack.mask = saved_stack_mask;
+        cpu.stack.notmask = saved_stack_notmask;
       }
       reg_eip = restored.eip;
       reg_esp = restored.esp;
@@ -5125,12 +5155,19 @@ Bitu dosemu_int21() {
         cpu.gdt.GetDescriptor(Segs.val[cs], dcs);
         std::fprintf(stderr,
             "[4B exit]  cs:eip=%04x:%08x ss:esp=%04x:%08x ds=%04x es=%04x "
-            "fs=%04x gs=%04x efl=%08x cpl=%u cr0=%08x cs.base=%08x\n",
+            "fs=%04x gs=%04x efl=%08x cpl=%u cr0=%08x cs.code.big=%d\n",
             (unsigned)Segs.val[cs], reg_eip, (unsigned)Segs.val[ss],
             reg_esp, (unsigned)Segs.val[ds], (unsigned)Segs.val[es],
             (unsigned)Segs.val[fs], (unsigned)Segs.val[gs], reg_flags,
             (unsigned)cpu.cpl, (unsigned)cpu.cr0,
-            (unsigned)dcs.GetBase());
+            cpu.code.big ? 1 : 0);
+        const PhysPt sp_lin = static_cast<PhysPt>(Segs.val[ss]) * 16u + (reg_esp & 0xFFFF);
+        std::fprintf(stderr,
+            "[4B exit]  IRET frame bytes @%04x:%04x:",
+            (unsigned)Segs.val[ss], reg_esp & 0xFFFF);
+        for (int i = 0; i < 12; ++i)
+          std::fprintf(stderr, " %02x", mem_readb(sp_lin + i));
+        std::fprintf(stderr, "\n");
       }
 
       mcb_free(child_psp);
