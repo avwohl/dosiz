@@ -34,10 +34,18 @@ when landed.  Suite is 29/29 at the start of the backlog.
    to no longer be a blocker.  (Subsequent compile+link failures
    are Watcom config issues -- missing system definition + libs --
    not dosemu bugs.)
-5. **DJGPP→DJGPP nested exec.**  Traced to LDT state handoff +
-   buffer collision at the child stub's `[DS:0x764]`.  Likely
-   needs ProcessState to snapshot/restore LDT slots 1-5 and
-   preserve the argv[0] region across child execution.
+5. **DJGPP→DJGPP nested exec.**  Two partial fixes landed (CR0.PE
+   flip on child entry, child PSP JFT init) but the core issue
+   remains: between the child stub's RM argv[0]-open and its PM
+   AH=3D call, six bytes near `[DS:0x764]` get rewritten with
+   what looks like a return-address save (values like
+   `13 02 11 20` = 0x20110213 = child_cs_base + stub_entry_ip).
+   Specific byte at `[DS:0x764]` gets zeroed, turning the argv[0]
+   path into an empty string.  Top-level DJGPP doesn't make this
+   particular PM AH=3D call so it doesn't care.  Needs a careful
+   read of what DJGPP's go32-v2 stub stores/expects at this
+   offset in the nested case -- probably a `__dpmi_regs *` or
+   stubinfo pointer that's populated differently.
 
 ## Larger
 6. **`make` with real recipes.**  Need FreeCOM (FreeDOS's
