@@ -220,14 +220,44 @@ when landed.  Suite is 29/29 at the start of the backlog.
 
    Remaining: spawning external programs through FreeCOM *returns
    cleanly from AH=4B* now, but FreeCOM's REPL falls silent after
-   the child exits -- no new prompt, INT 21 trace stops after
-   AH=48 BX=0 (query-free-memory idiom), and PIC port writes fire
-   in the idle window.  The old "LE PM exception" failure mode is
-   gone (re-checked 2026-04-23).  Working theory: FreeCOM is the
-   XMS_Swap build and the swap-back path after the child is
-   leaving FreeCOM in a half-swapped state.  Applies equally to
-   trivial .COM children (HELLO.COM) and DJGPP children
-   (DJ_WRITE.EXE) -- not child-specific.  Needs its own session.
+   the child exits.  Traced the XMS_Swap path:
+
+       pre-spawn:
+         XMS AH=09 DX=0019       alloc 25 KB EMB -> handle 1
+         XMS AH=0B len=25120     src seg 0x2092:0 (FreeCOM transient)
+                                 dst h1:0        (into XMS)
+         XMS AH=0B len=0         src seg 0x0100:0, dst h1:0x6220
+                                 (end-of-chunk-list terminator)
+         AH=4B                   exec child
+         AH=4C                   child exits
+
+       post-spawn:
+         AH=48 BX=0              alloc 0 paras (we return success w/ tiny seg)
+         XMS AH=0B len=0         src h1:0x6220 dst seg 0x2001:0
+                                 (only one restore move, len=0, wrong seg!)
+         ... hang ...
+
+   Two observations:
+   (a) The restore move has **len=0**, not len=25120 as symmetry would
+       require.  FreeCOM's chunk-list it walks is coming back empty.
+   (b) The destination segment is **0x2001**, not the pre-spawn
+       0x2092.  That's where our child was loaded (MCB arena + 1).
+       FreeCOM appears to be trying to restore into child-land.
+
+   Working theory: FreeCOM's restore-chunk-list lives in its
+   resident-resident portion (below the 4Ah-shrink boundary), but
+   some pointers in that list reference pre-spawn transient
+   addresses.  When the resident code runs post-spawn, those
+   pointers are stale.  Or FreeCOM expects AH=48 BX=0 to return the
+   SAME segment it had pre-spawn (we return whichever free block is
+   first) and uses that returned seg as the dst.
+
+   Fixing probably needs FreeCOM source inspection
+   (github.com/FDOS/freecom) to see what the post-spawn code
+   actually does with the AH=48 result and where the chunk list
+   lives.  Suite's MAKE test uses COMMAND.COM /c (one-shot, no
+   REPL resume) and passes, so this doesn't block anything we
+   ship.  Needs its own session.
 7. ~~**AH=4B AL=5** (Set execution state -- for debuggers).~~
    Stubbed as no-op success.  DOS 5+ IO.SYS is effectively the
    only caller in the wild; programs that test-probe the API are
