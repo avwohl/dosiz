@@ -135,7 +135,21 @@ when landed.  Suite is 29/29 at the start of the backlog.
    satisfied by CF=0.  If a real caller ever shows up we'll
    implement the state-switch for real.
 8. **QEMM parity** -- structural DPMI-host gap mentioned in the
-   earlier-session notes below.
+   earlier-session notes below.  **Progress:** the ring-3 path
+   (`DOSEMU_DPMI_RING3=1`) handles all 25 DPMI_* fixtures except
+   one (`DPMI_INTEGRATION`) with zero changes, so we're mostly
+   there.  The remaining issue is the client-CS bitness at DPMI
+   entry: CWSDPMI gives a 32-bit CS when AX=1, but our entry
+   path hands out 16-bit (because DJGPP go32 stubs start in
+   16-bit code and far-jump to their own 32-bit selector).
+   Making the ring-3 path default needs: (a) either honour AX
+   at entry properly and fix whatever in the DJGPP go32 stub
+   assumed a 16-bit initial CS, OR add a per-client hint (MZ
+   stub signature?) to keep DJGPP on 16-bit and everyone else
+   on 32-bit; and (b) migrate the eight DPMI_STAGE* fixtures
+   (which currently run at ring 0 by not opting in) to the
+   ring-3 path.  Defer until one of those is actually blocking
+   something.
 
 ## Maintenance / paper cuts
 9. ~~**`DPMI_STAGE3.COM`** hangs -- not in CI.~~  Removed.  The
