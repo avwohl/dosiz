@@ -692,18 +692,20 @@ jobs:
           grep -q 'dosemu-wrote-ok' WROTE.TXT
           grep -q 'ci-tail' WROTE.TXT
 
-      - name: DJGPP + DPMI + shell + make integration suite
+      - name: DJGPP + DPMI + EMS/VCPI/HMA + shell + make integration suite
         run: |
           # The tests/djgpp/run.sh harness covers the full real-world
-          # stack: 10 DJGPP-compiled C fixtures (write, printf, argv,
-          # env, file I/O, malloc, stdin, signal, exec to a RM child,
-          # exec to a DJGPP child), a 2.3 MB C++ BIGTEST binary (STL +
-          # regex + global ctor/dtor), the MAKE gate (GNU make 4.4
-          # driving a Makefile through FreeCOM), the FREECOM gate
-          # (shell boots + ECHO roundtrips), and real-world DJGPP
-          # tools (grep/diff/cat/sed/sort/wc/gawk/gzip/ls/find/patch/
-          # tar/bc/m4/flex/seq/factor/basename).  Ring-3 DPMI is the
-          # default now; the suite doesn't set any opt-in env vars.
+          # stack: 3 memory-manager probes (EMS 4.0 via INT 67h, VCPI
+          # via AX=DE00, HMA via XMS A-class), 10 DJGPP-compiled C
+          # fixtures (write, printf, argv, env, file I/O, malloc,
+          # stdin, signal, exec to a RM child, exec to a DJGPP child),
+          # a 2.3 MB C++ BIGTEST binary (STL + regex + global
+          # ctor/dtor), the MAKE gate (GNU make 4.4 driving a
+          # Makefile through FreeCOM), the FREECOM gate (shell boots
+          # + ECHO roundtrips), and real-world DJGPP tools (grep/
+          # diff/cat/sed/sort/wc/gawk/gzip/ls/find/patch/tar/bc/m4/
+          # flex/seq/factor/basename).  Ring-3 DPMI is the default
+          # now; the suite doesn't set any opt-in env vars.
           #
           # All binaries are committed so CI doesn't need a DJGPP
           # cross-compiler (see tests/djgpp/build.sh for the rebuild
