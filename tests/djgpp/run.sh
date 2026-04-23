@@ -71,6 +71,7 @@ run_one DJ_STDIN  "dj-stdin=ok"  0 "pipe-payload"
 run_one DJ_SIGNAL "dj-signal=ok" 0 ""
 run_one DJ_EXEC   "dj-exec=ok"   0 ""
 run_one DJ_DJE    "dj-dj-exec=ok" 0 ""
+run_one BIGTEST   "bigtest-done" 0 ""
 
 # GNU make 4.4 + FreeCOM as $SHELL.  Build a tiny Makefile and check
 # the rule's output arrives on stdout and the target file is created.

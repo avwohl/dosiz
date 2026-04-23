@@ -30,3 +30,13 @@ for src in dj_*.c; do
     i586-pc-msdosdjgpp-gcc -O2 -Wall -Wextra -o "$out" "$src"
     printf "  built  %s  (%d bytes)\n" "$out" "$(wc -c <"$out" | tr -d ' ')"
 done
+
+# 2.3 MB C++ binary: STL + regex + global ctor/dtor.  Kept separate
+# from the dj_*.c set because it needs g++ and the C++ runtime, and
+# takes noticeably longer to compile.  -O0 on purpose so the binary
+# doesn't shrink below the 2 MB mark that probes our MCB allocator's
+# large-alloc path.
+if command -v i586-pc-msdosdjgpp-g++ >/dev/null; then
+    i586-pc-msdosdjgpp-g++ -O0 -o "${out_dir}BIGTEST.EXE" bigtest.cpp
+    printf "  built  %sBIGTEST.EXE  (%d bytes)\n" "$out_dir" "$(wc -c <"${out_dir}BIGTEST.EXE" | tr -d ' ')"
+fi
