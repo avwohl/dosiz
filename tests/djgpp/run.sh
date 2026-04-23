@@ -71,6 +71,22 @@ run_one DJ_SIGNAL "dj-signal=ok" 0 ""
 run_one DJ_EXEC   "dj-exec=ok"   0 ""
 run_one DJ_DJE    "dj-dj-exec=ok" 0 ""
 
+# FreeCOM (FreeDOS's COMMAND.COM) smoke test: boot the shell, run a
+# built-in (ECHO) that requires the AH=65 AL=05 NLS filename-character
+# table (without it, is_fnchar() rejects CR/LF and the internal-command
+# match fails on any command-with-arg), and exit.  Regression gate for
+# the content-sniffed .COM/.EXE loader and the NLS fix.  We run from
+# the repo root (not a tmpdir) so FreeCOM can self-locate via
+# %COMSPEC%=C:\TESTS\COMMAND.COM for its strings resource.
+fcout=$(printf 'echo fc-hello\r\nexit\r\n' | timeout 10 ./build/dosemu tests/COMMAND.COM 2>/dev/null | tr -d '\r')
+if echo "$fcout" | grep -q '^fc-hello$'; then
+    printf "  %-12s PASS\n" "FREECOM"
+    pass=$((pass + 1))
+else
+    printf "  %-12s FAIL (out=%q)\n" "FREECOM" "$fcout"
+    fail=$((fail + 1))
+fi
+
 # Extra assertion: DJ_ARGV called with a quoted multi-word arg must
 # deliver it as a single argv entry (regression gate for the PSP
 # cmd-tail quoting fix).

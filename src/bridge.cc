@@ -4134,24 +4134,68 @@ Bitu dosemu_int21() {
       // Output: on success CX=info len, buffer filled.
       // Our minimal implementation reports US / codepage 437 /
       // "C"-locale-equivalent.  DJGPP libc uses this in setlocale
-      // and various isalpha/toupper tables.  A real-data response
-      // is cheaper than dealing with programs that choke on the
-      // "invalid function" default.
+      // and various isalpha/toupper tables; FreeCOM uses AL=05
+      // (filename-character table) to populate its is_fnchar() --
+      // without which every character is treated as non-filename
+      // and internal commands can't be parsed.
       const uint16_t cx_in = reg_cx;
       const PhysPt dst = SegPhys(es) + reg_di;
-      // 41-byte response (id=1): info-id, size, codepage, country,
-      // then date-fmt/time-fmt/currency/thousands/decimal/etc.
-      uint8_t buf[41] = {0};
-      buf[0] = 0x01;                                 // info id
-      buf[1] = sizeof(buf) & 0xFF;
-      buf[2] = 0;
-      buf[3] = 0xB5; buf[4] = 0x01;                  // codepage = 437
-      buf[5] = 0x01; buf[6] = 0x00;                  // country = 1 (USA)
-      buf[7] = 0;                                    // date format = US m/d/y
-      buf[8] = '$'; buf[9] = 0;                      // currency
-      buf[14] = ','; buf[16] = '.';                  // thousands/decimal
-      buf[30] = ':'; buf[32] = '/';                  // time / date sep
-      size_t n = std::min<size_t>(cx_in, sizeof(buf));
+      uint8_t buf[64] = {0};
+      size_t n = 0;
+      if (reg_al == 0x05) {
+        // Filename character table: buf[0]=id, buf[1..4]=FAR pointer
+        // to the table.  FreeCOM reads the 10-byte header via that
+        // pointer, then treats pointer+10 as the illegal-char list.
+        // We park the table at a fixed offset (0x0060:0x0010 =
+        // linear 0x610) just past the SFT stub block at 0x600.
+        constexpr uint32_t nls_tab = 0x610;
+        // Table layout (10-byte header + 13 illegal chars):
+        //   [0..1] = reserved (size/pad)
+        //   [2]    = reserved
+        //   [3]    = inclFirst (lowest allowed char)
+        //   [4]    = inclLast  (highest allowed char)
+        //   [5]    = reserved
+        //   [6]    = exclFirst (lead-byte exclude range start)
+        //   [7]    = exclLast  (lead-byte exclude range end, empty)
+        //   [8]    = reserved
+        //   [9]    = illegalLen (count of bytes that follow)
+        //   [10..] = illegal chars
+        static const uint8_t tbl[10] = {
+            0x17, 0x00,   // size hint
+            0x00,
+            0x21,         // inclFirst (first printable ASCII char, '!')
+            0xFF,         // inclLast
+            0x00,
+            0x80,         // exclFirst
+            0x80,         // exclLast (empty exclude range)
+            0x00,
+            13,           // illegalLen
+        };
+        static const char illegal[] = ".\"/\\[]:|<>+=;,";
+        for (size_t i = 0; i < sizeof(tbl); ++i)
+          mem_writeb(nls_tab + i, tbl[i]);
+        for (size_t i = 0; i < 13; ++i)
+          mem_writeb(nls_tab + 10 + i, static_cast<uint8_t>(illegal[i]));
+        buf[0] = 0x05;
+        buf[1] = 0x10;   // offset lo
+        buf[2] = 0x00;   // offset hi
+        buf[3] = 0x60;   // segment lo
+        buf[4] = 0x00;   // segment hi
+        n = 5;
+      } else {
+        // Default (subfunctions 1 etc.): 41-byte extended country info.
+        buf[0] = 0x01;                                 // info id
+        buf[1] = 41 & 0xFF;
+        buf[2] = 0;
+        buf[3] = 0xB5; buf[4] = 0x01;                  // codepage = 437
+        buf[5] = 0x01; buf[6] = 0x00;                  // country = 1 (USA)
+        buf[7] = 0;                                    // date format = US m/d/y
+        buf[8] = '$'; buf[9] = 0;                      // currency
+        buf[14] = ','; buf[16] = '.';                  // thousands/decimal
+        buf[30] = ':'; buf[32] = '/';                  // time / date sep
+        n = 41;
+      }
+      n = std::min<size_t>(cx_in, n);
       for (size_t i = 0; i < n; ++i)
         mem_writeb(dst + i, buf[i]);
       reg_cx = static_cast<uint16_t>(n);
@@ -4364,12 +4408,15 @@ Bitu dosemu_int21() {
             (unsigned)reg_al, (unsigned)reg_bx, (unsigned)reg_cx, (unsigned)reg_dx);
       }
       if (reg_al == 0x00) {
-        // Get device info: DX = attribute bits.  Bit 7 = character
-        // device (stdin/stdout/con), 0 = regular file.  Validate the
-        // handle so DJGPP's isatty() / open() post-check gets the
-        // right answer instead of "file" for a bogus BX.
+        // Get device info: DX = attribute bits.
+        //   bit 0: is stdin         bit 6: "not at EOF" (more input)
+        //   bit 1: is stdout        bit 7: character device (vs file)
+        //   bit 2: is NUL device    bits 8-15: reserved
+        // Bit 6 matters: FreeCOM's interactive-input decision is
+        // `(attr & 0xc0) == 0x80` -- char device at EOF -> exit.
+        // We leave bit 6 set so interactive shells don't early-bail.
         if (reg_bx == 0 || reg_bx == 1 || reg_bx == 2) {
-          reg_dx = 0x80 | (reg_bx & 0x07); // char device
+          reg_dx = 0xC0 | (reg_bx & 0x07); // char device, not at EOF
         } else {
           auto it = s_handles.find(reg_bx);
           if (it == s_handles.end()) {
@@ -5877,6 +5924,17 @@ bool iends_with(const std::string &path, const char *suffix) {
 }
 bool load_program_at(const std::string &path, uint16_t psp_seg,
                      InitialRegs &out) {
+  // Prefer content sniffing over extension: FreeCOM ships as
+  // COMMAND.COM but is actually MZ format (> 64KB).  DOS loaders
+  // check the magic bytes, not the extension.
+  std::FILE *f = std::fopen(path.c_str(), "rb");
+  if (f) {
+    uint8_t magic[2] = {0, 0};
+    std::fread(magic, 1, 2, f);
+    std::fclose(f);
+    if (magic[0] == 'M' && magic[1] == 'Z')
+      return load_exe_at(path, psp_seg, out);
+  }
   if (iends_with(path, ".exe")) return load_exe_at(path, psp_seg, out);
   return load_com_at(path, psp_seg, out);
 }

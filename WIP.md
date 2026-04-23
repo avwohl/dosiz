@@ -90,12 +90,28 @@ when landed.  Suite is 29/29 at the start of the backlog.
    DJGPP→DJGPP nested exec).**
 
 ## Larger
-6. **`make` with real recipes.**  Need FreeCOM (FreeDOS's
-   COMMAND.COM) in `tests/`.  Real COMMAND.COM should run -- it's
-   "just" a real-mode DOS program -- but may hit weak BIOS stubs
-   (INT 10h screen, INT 16h keyboard) or its own startup checks
-   (AUTOEXEC.BAT, "am I the first shell?").  Discuss before
-   starting.
+6. **`make` with real recipes.**  **Partial.**  FreeCOM 0.86 from
+   FDOS/freecom release `com086` is in `tests/COMMAND.COM` and
+   boots to a prompt; `ECHO`, `DIR`, `CD`, `TYPE`, `VER`, `EXIT`
+   all work.  Required fixes:
+   - Content-sniffed loader: the file is named `.COM` but is MZ
+     format (>64 KB), so `load_program_at` now peeks magic bytes
+     before falling back to extension.
+   - INT 21 AH=65 AL=05 (filename-character table) now returns a
+     real table with `inclFirst=0x21` (otherwise is_fnchar()
+     accepts CR/LF and the internal-command match breaks on any
+     command-with-arg).
+   - INT 21 AH=44 AL=00 sets bit 6 ("more input available") for
+     stdin/stdout/stderr so FreeCOM doesn't early-exit on its
+     char-device-at-EOF check `(attr & 0xc0) == 0x80`.
+   - Added FREECOM regression gate to the test suite (31/31).
+
+   Remaining: spawning external programs through FreeCOM faults
+   with "LE client PM exception" -- the spawned DJGPP child's PM
+   entry path isn't coming back through the FreeCOM parent's
+   resume cleanly (not the same #5 code path -- FreeCOM parent
+   is real-mode-only, so the AH=4B restore is simpler).  Needs
+   its own session to untangle.
 7. **AH=4B AL=5** (Set execution state -- for debuggers).
 8. **QEMM parity** -- structural DPMI-host gap mentioned in the
    earlier-session notes below.
