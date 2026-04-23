@@ -265,15 +265,20 @@ when landed.  Suite is 29/29 at the start of the backlog.
    session plus a post-spawn builtin + exit.  Interactive REPL
    returns cleanly after a minimal DJGPP child.
 
-   **Still broken under FreeCOM-parent**: richer DJGPP programs
-   (SEQ.EXE, GREP.EXE, WC.EXE, etc. -- all of which run cleanly
-   when spawned directly) crash mid-execution with
-   "PM exception dispatcher in recursive-fault loop (vec=6
-   cs:eip=0037:<bogus>)".  DJ_WRITE is too minimal to hit the
-   same path.  Probably more hidden state the PM child needs
-   initialised that the top-level-load path sets up but the
-   AH=4B child-load doesn't (no direct evidence yet).  Separate
-   session.
+   **Partial**: our in-tree DJGPP binaries (DJ_WRITE, DJ_PRINTF,
+   DJ_SIGNAL, DJ_MALLOC, DJ_EXEC, DJ_STDIN, DJ_ARGV, BIGTEST -- all
+   built against 2015 DJGPP libc) run cleanly under FreeCOM-parent.
+   Third-party DJGPP tools that ship with delorie's txt20b/fil41b/
+   shellutils from ~2000 (SEQ, WC, GREP, DIFF, FACTOR, ...) crash
+   with "PM exception dispatcher in recursive-fault loop
+   (vec=6 cs:eip=0037:<different-per-tool>)".  Deterministic per
+   binary; each fault EIP is different but always in CS=0x37
+   (LDT[6], the app code seg) at offsets far past the segment
+   limit.  DPMI traces show the fault fires very early in startup,
+   right after a normal sequence of AX=0000/0501/0007/0009/0008/
+   0100 calls -- same sequence DJ_WRITE takes that doesn't fault.
+   Evidence points at a 2000-era libc startup quirk rather than a
+   fundamental emulator bug.  Separate session.
 7. ~~**AH=4B AL=5** (Set execution state -- for debuggers).~~
    Stubbed as no-op success.  DOS 5+ IO.SYS is effectively the
    only caller in the wild; programs that test-probe the API are
