@@ -1282,7 +1282,16 @@ Bitu dosemu_dpmi_entry() {
     // (because paging/segmentation still isolates) have no effect on
     // real interrupt delivery.  Mimic that here: EFLAGS = 0x3002.
     mem_writed(frame + 8,  0x00003002u);
-    mem_writed(frame + 12, 0xFFFC);
+    // Preserve the client's RM SP into PM instead of hardcoding
+    // 0xFFFC.  For a nested DJGPP child, SS base = child_ds_base
+    // (e.g. 0x20110) and a hardcoded 0xFFFC lands the PM stack at
+    // 0x3010C -- which sits INSIDE the 60KB scratch buffer the
+    // child allocates (base 0x24120) for its COFF-load AH=3F read.
+    // The read clobbers the stack and RET on return gets 0.
+    // Using client_sp keeps the stack just past the stub image
+    // where the MZ loader placed it.
+    const uint32_t client_sp = reg_sp;
+    mem_writed(frame + 12, client_sp);
     mem_writed(frame + 16, ldt_ss);
 
     CPU_IRET(true, 0);
@@ -3268,6 +3277,12 @@ Bitu dosemu_int31() {
             (unsigned)SegValue(es), (unsigned)SegPhys(es));
       }
 
+      if (std::getenv("DOSEMU_STACKWATCH")) {
+        const uint32_t ss_lin = SegPhys(ss) + reg_esp;
+        std::fprintf(stderr, "[simrm-enter] INT %02x client SS:SP=%04x:%08x lin=%08x val=%04x\n",
+            (unsigned)intnum, (unsigned)SegValue(ss), (unsigned)reg_esp,
+            ss_lin, (unsigned)mem_readw(ss_lin));
+      }
       // Snapshot PM state (segments + full register file + stack).
       const uint32_t saved_cr0  = cpu.cr0;
       const uint16_t saved_cs   = SegValue(cs);
@@ -3410,6 +3425,12 @@ Bitu dosemu_int31() {
       mem_writew(rmcs + 0x26, r_fs);
       mem_writew(rmcs + 0x28, r_gs);
 
+      if (std::getenv("DOSEMU_STACKWATCH")) {
+        const uint32_t ss_lin = SegPhys(ss) + reg_esp;
+        std::fprintf(stderr, "[simrm-exit]  INT %02x client SS:SP=%04x:%08x lin=%08x val=%04x\n",
+            (unsigned)intnum, (unsigned)SegValue(ss), (unsigned)reg_esp,
+            ss_lin, (unsigned)mem_readw(ss_lin));
+      }
       set_cf(false);
       return CBRET_NONE;
     }
