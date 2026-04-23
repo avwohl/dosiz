@@ -1,3 +1,48 @@
+# QEMM parity — EMS/VCPI/HMA covered for free (2026-04-23)
+
+User asked "what is left to do for full QEMM emulation?"  Survey
+turned up a much smaller gap than expected: **EMS 4.0 and VCPI are
+already wired via dosbox-staging's `src/ints/ems.cpp`**.  That module
+is initialised during `control->Init()` since it's registered via
+`secprop->AddInitFunction(&EMS_Init, ...)` in dosbox.cpp:1137, so we
+inherit it at no extra cost.
+
+Concrete evidence (all three probes in `tests/` added to the suite):
+
+    tests/ems_probe.asm   -> INT67=C889:0004, VER=4.0, FRAME=E000,
+                             PAGES T=0400 F=03A4   (16 MB, LIM 4.0)
+    tests/vcpi_probe.asm  -> VCPI VER=0.1 PAGES=01B3
+    tests/hma_probe.asm   -> hma-ok
+
+Gaps found and closed in this session:
+
+1. **VCPI install check** -- dosbox only answers AX=DE00 from v86
+   mode OR with the JEMM probe convention (CX=0, DI=0x0012).  Our
+   probe now sets those; real DOS extenders already do.
+2. **HMA + A20 helpers** -- added to `dosemu_xms_driver` (bridge.cc):
+   AH=01 Request HMA, AH=02 Release, AH=03/05 Enable A20, AH=04/06
+   Disable (no-op), AH=07 Query A20.  AH=00 now returns DX=1 ("HMA
+   exists") since we keep A20 enableable on demand.
+3. **EMMXXXX0 char-device open** -- programs that probe EMS via
+   `AH=3D` open of "EMMXXXX0" (not via INT 67h) now get a valid
+   handle backed by `/dev/null`.  Same path handles CON/NUL/AUX/PRN/
+   CLOCK$/XMSXXXX0.
+
+What's left for "full QEMM parity":
+
+- **UMBs proper** (AH=58 AL=02/03 today return no-op "unlinked").
+  Requires real C800-EFFF arena + MCB 'U' markers + `DOS=UMB`
+  integration.  Not exercised by anything we run; defer.
+- **DPMI 1.0 advertise** (AX=0400 still returns 0.90).  The
+  subfunctions real clients need are all implemented; the version
+  byte is cosmetic.
+- **QEMM-proprietary APIs (QPI, Stealth, MANIFEST)** -- out of scope;
+  no real program requires them when EMS/VCPI/XMS/DPMI are present.
+
+Suite now at 36/36 green (was 33/33) with the three new probes.
+
+---
+
 # The delorie cpp.exe SIGFPE — root cause found (2026-04-23)
 
 Spent a session chasing `cpp.exe --version` crashing with vec=16 #MF

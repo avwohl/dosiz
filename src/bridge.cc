@@ -1352,6 +1352,7 @@ Bitu dosemu_dpmi_entry() {
 std::map<uint16_t, uint32_t> s_xms_handles;   // handle -> linear base
 std::map<uint16_t, uint32_t> s_xms_sizes;     // handle -> size (KB)
 uint16_t s_xms_next_handle = 1;
+bool     s_hma_allocated = false;  // HMA (FFFF:0010..FFFF:FFFF) claimed
 
 Bitu dosemu_xms_driver() {
   const uint8_t fn = reg_ah;
@@ -1359,7 +1360,47 @@ Bitu dosemu_xms_driver() {
     case 0x00:
       reg_ax = 0x0300;   // XMS 3.0
       reg_bx = 0;
-      reg_dx = 0;
+      reg_dx = 1;        // bit 0 = HMA exists (we keep A20 on permanently)
+      return CBRET_NONE;
+
+    // --- HMA + A20 control ---
+    //
+    // HMA is the "high memory area" -- the 64 KB-16 B window from
+    // FFFF:0010 to FFFF:FFFF that becomes addressable once A20 is
+    // enabled.  We force A20 on at startup (bridge.cc:1031) and never
+    // turn it off, so HMA is always reachable; only arbitrate which
+    // single client owns it.
+
+    case 0x01: {  // Request HMA (DX = minimum bytes needed, 0xFFFF = DOS)
+      if (s_hma_allocated) {
+        reg_ax = 0; reg_bl = 0x92;  // HMA already in use
+        return CBRET_NONE;
+      }
+      s_hma_allocated = true;
+      reg_ax = 1;
+      return CBRET_NONE;
+    }
+    case 0x02: {  // Release HMA
+      if (!s_hma_allocated) {
+        reg_ax = 0; reg_bl = 0x93;  // HMA not allocated
+        return CBRET_NONE;
+      }
+      s_hma_allocated = false;
+      reg_ax = 1;
+      return CBRET_NONE;
+    }
+    case 0x03:   // Global Enable A20
+    case 0x05:   // Local Enable A20
+      MEM_A20_Enable(true);
+      reg_ax = 1;
+      return CBRET_NONE;
+    case 0x04:   // Global Disable A20  (no-op; we need A20 on for LDT/IDT)
+    case 0x06:   // Local Disable A20
+      reg_ax = 1;
+      return CBRET_NONE;
+    case 0x07:   // Query A20 state
+      reg_ax = MEM_A20_Enabled() ? 1 : 0;
+      reg_bl = 0;
       return CBRET_NONE;
     case 0x08: {
       // Free extended memory in KB.  pm_arena covers [1MB, memsize).
@@ -3761,6 +3802,43 @@ Bitu dosemu_int21() {
         if (dosemu::g_debug.open_trace) {
           std::fprintf(stderr, "[open] reconstructed path from clobbered "
               "stub buffer: '%s'\n", dos_path.c_str());
+        }
+      }
+      // DOS character-device names resolve by name, not by filesystem
+      // path.  Programs probe for EMMXXXX0 (EMS) / XMSXXXX0 (XMS) / etc.
+      // via AH=3D open and only want a valid handle that read/write/close
+      // cleanly -- they talk to the driver via INT 67h / INT 2F, not
+      // through this handle.  Strip drive and path, compare the base
+      // name (without extension) to a small reserved set.
+      {
+        std::string base = dos_path;
+        // drop drive letter "X:"
+        if (base.size() >= 2 && base[1] == ':')
+          base.erase(0, 2);
+        // drop leading path components
+        auto slash = base.find_last_of("\\/");
+        if (slash != std::string::npos) base.erase(0, slash + 1);
+        // drop extension (".EXT") for the comparison
+        auto dot = base.find('.');
+        std::string stem = (dot == std::string::npos) ? base : base.substr(0, dot);
+        // case-fold
+        for (auto &c : stem) c = static_cast<char>(::toupper(c));
+        const bool is_char_dev =
+            stem == "EMMXXXX0" ||
+            stem == "XMSXXXX0" ||
+            stem == "CON"      ||
+            stem == "NUL"      ||
+            stem == "AUX"      ||
+            stem == "PRN"      ||
+            stem == "CLOCK$";
+        if (is_char_dev) {
+          const int devfd = ::open("/dev/null", O_RDWR);
+          if (devfd < 0) { return_error(0x02); break; }
+          int h = allocate_handle(devfd, false);
+          if (h < 0) { ::close(devfd); return_error(0x04); break; }
+          reg_ax = static_cast<uint16_t>(h);
+          set_cf(false);
+          return CBRET_NONE;
         }
       }
       const Resolved r = resolve_path(dos_path);

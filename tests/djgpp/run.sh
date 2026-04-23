@@ -61,6 +61,13 @@ run_one() {
     fi
 }
 
+# EMS (LIM 4.0) and VCPI probes -- INT 67h + AX=DE00 respectively.
+# Regression gate that dosbox-staging's ems.cpp stays wired through
+# our dosbox-init path.
+run_one EMS_PROBE  "ems-ok"     0 ""
+run_one VCPI_PROBE "vcpi-ok"    0 ""
+run_one HMA_PROBE  "hma-ok"     0 ""
+
 run_one DJ_WRITE  "dj-write=ok"  0 ""
 run_one DJ_PRINTF "dj-printf=ok" 7 ""
 run_one DJ_ARGV   "dj-argv=ok"   0 ""   hello world
