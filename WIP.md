@@ -90,7 +90,24 @@ when landed.  Suite is 29/29 at the start of the backlog.
    DJGPP→DJGPP nested exec).**
 
 ## Larger
-6. **`make` with real recipes.**  **Partial.**  FreeCOM 0.86 from
+6. ~~**`make` with real recipes.**~~  **Done.**  GNU make 4.4
+   (delorie `mak44b.zip`) runs a Makefile end-to-end: parses
+   rules, stats targets, spawns FreeCOM as SHELL, runs the
+   recipe, writes target output.  Regression gate MAKE in the
+   suite (now 32/32).  Required:
+   - INT 21h AH=71h AL=4E/4F/A1 (LFN findfirst/next/close) now
+     returns a real DOS error (0x02 = file not found -> ENOENT)
+     instead of the conservative "LFN not supported" AX=0x7100
+     CF=1.  DJGPP newlib's stat() maps the latter to EINVAL and
+     doesn't retry with SFN, so every target-existence check in
+     make failed with "stat: <name>: Invalid argument".
+   - Run with `TMPDIR=C:\TMP` (with the directory pre-created) so
+     DJGPP's temp-dir probe doesn't warn about a Unix-shaped path.
+   - Needs COMMAND.COM (our FreeCOM) in the same directory as
+     MAKE.EXE for the shell-spawn to resolve.
+
+   Historical notes preserved:
+   FreeCOM 0.86 from
    FDOS/freecom release `com086` is in `tests/COMMAND.COM` and
    boots to a prompt; `ECHO`, `DIR`, `CD`, `TYPE`, `VER`, `EXIT`
    all work.  Required fixes:

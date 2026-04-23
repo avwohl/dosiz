@@ -4574,6 +4574,11 @@ Bitu dosemu_int21() {
       }
       const std::string dos_path = read_dos_string(SegValue(ds), reg_dx);
       const Resolved    r        = resolve_path(dos_path);
+      if (dosemu::g_debug.int4b_trace) {
+        std::fprintf(stderr, "[4B] dos='%s' -> host='%s' exists=%d\n",
+            dos_path.c_str(), r.host_path.c_str(),
+            ::access(r.host_path.c_str(), F_OK) == 0);
+      }
       if (::access(r.host_path.c_str(), F_OK) != 0) {
         return_error(2);   // file not found
         break;
@@ -5186,7 +5191,17 @@ Bitu dosemu_int21() {
         set_cf(false);
         return CBRET_NONE;
       }
-      // Other LFN sub-functions: signal not-supported so callers
+      // Other LFN sub-functions: for findfirst/findnext/findclose
+      // (AL=4E/4F/A1) specifically, return a real DOS error so
+      // libc callers like DJGPP's newlib stat() map it to ENOENT
+      // instead of EINVAL.  AX=0x7100 (LFN not supported) is the
+      // conservative answer but make 4.4's stat() sees that as
+      // EINVAL and fails before trying the SFN fallback.
+      if (reg_al == 0x4E || reg_al == 0x4F || reg_al == 0xA1) {
+        return_error(0x02);  // file not found -> ENOENT
+        return CBRET_NONE;
+      }
+      // For other sub-functions: signal not-supported so callers
       // fall back to SFN.
       reg_ax = 0x7100;
       set_cf(true);

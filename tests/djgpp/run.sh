@@ -71,6 +71,32 @@ run_one DJ_SIGNAL "dj-signal=ok" 0 ""
 run_one DJ_EXEC   "dj-exec=ok"   0 ""
 run_one DJ_DJE    "dj-dj-exec=ok" 0 ""
 
+# GNU make 4.4 + FreeCOM as $SHELL.  Build a tiny Makefile and check
+# the rule's output arrives on stdout and the target file is created.
+# This exercises: DJGPP stat() (LFN AL=4E fallback to ENOENT), exec
+# via AH=4B of FreeCOM, FreeCOM's parsing of /c argument, FreeCOM
+# running a built-in and exiting cleanly back to make.
+mdir=$(mktemp -d)
+cp build/dosemu tests/MAKE.EXE tests/COMMAND.COM "$mdir/"
+mkdir "$mdir/TMP"
+cat > "$mdir/Makefile" <<'MAKEEOF'
+all: out.txt
+out.txt:
+	@echo make-hello > out.txt
+	@echo built
+MAKEEOF
+(cd "$mdir" && DOSEMU_DPMI_RING3=1 TMPDIR=C:\\TMP timeout 20 ./dosemu MAKE.EXE 2>/dev/null) > "$mdir/out"
+mout=$(tr -d '\r' < "$mdir/out")
+mfile=$(tr -d '\r' < "$mdir/out.txt" 2>/dev/null)
+rm -rf "$mdir"
+if [[ "$mout" == *"built"* && "$mfile" == "make-hello" ]]; then
+    printf "  %-12s PASS\n" "MAKE"
+    pass=$((pass + 1))
+else
+    printf "  %-12s FAIL (stdout=%q target=%q)\n" "MAKE" "$mout" "$mfile"
+    fail=$((fail + 1))
+fi
+
 # FreeCOM (FreeDOS's COMMAND.COM) smoke test: boot the shell, run a
 # built-in (ECHO) that requires the AH=65 AL=05 NLS filename-character
 # table (without it, is_fnchar() rejects CR/LF and the internal-command
