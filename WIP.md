@@ -263,7 +263,17 @@ when landed.  Suite is 29/29 at the start of the backlog.
    FC_SPAWN regression test now exercises both an RM child
    (HELLO.COM) and a PM child (DJ_WRITE.EXE) within one FreeCOM
    session plus a post-spawn builtin + exit.  Interactive REPL
-   fully functional.
+   returns cleanly after a minimal DJGPP child.
+
+   **Still broken under FreeCOM-parent**: richer DJGPP programs
+   (SEQ.EXE, GREP.EXE, WC.EXE, etc. -- all of which run cleanly
+   when spawned directly) crash mid-execution with
+   "PM exception dispatcher in recursive-fault loop (vec=6
+   cs:eip=0037:<bogus>)".  DJ_WRITE is too minimal to hit the
+   same path.  Probably more hidden state the PM child needs
+   initialised that the top-level-load path sets up but the
+   AH=4B child-load doesn't (no direct evidence yet).  Separate
+   session.
 7. ~~**AH=4B AL=5** (Set execution state -- for debuggers).~~
    Stubbed as no-op success.  DOS 5+ IO.SYS is effectively the
    only caller in the wild; programs that test-probe the API are
