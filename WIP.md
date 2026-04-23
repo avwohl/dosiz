@@ -129,17 +129,27 @@ when landed.  Suite is 29/29 at the start of the backlog.
    resume cleanly (not the same #5 code path -- FreeCOM parent
    is real-mode-only, so the AH=4B restore is simpler).  Needs
    its own session to untangle.
-7. **AH=4B AL=5** (Set execution state -- for debuggers).
+7. ~~**AH=4B AL=5** (Set execution state -- for debuggers).~~
+   Stubbed as no-op success.  DOS 5+ IO.SYS is effectively the
+   only caller in the wild; programs that test-probe the API are
+   satisfied by CF=0.  If a real caller ever shows up we'll
+   implement the state-switch for real.
 8. **QEMM parity** -- structural DPMI-host gap mentioned in the
    earlier-session notes below.
 
 ## Maintenance / paper cuts
-9. **`DPMI_STAGE3.COM`** hangs -- not in CI.  Either fix,
-   document, or remove.
-10. **`DOSEMU_CPU_TRACE` forcing `core=normal`** is surprising
-    (documented in DEBUGGING.md).  See if the JIT can be made to
-    honour memory watchpoints so the trace no longer needs to
-    downgrade the core.
+9. ~~**`DPMI_STAGE3.COM`** hangs -- not in CI.~~  Removed.  The
+   test was an early iteration that verified the real->PM switch
+   by writing a memory marker and then spinning (CI timeout =
+   pass).  Superseded by `DPMI_STAGE4.COM` and later, which
+   actually exit cleanly with a success marker on stdout.
+10. ~~**`DOSEMU_CPU_TRACE` forcing `core=normal`** is surprising.~~
+    Now prints a stderr warning explaining the forced downgrade
+    so the user isn't surprised by slow execution.  Making the
+    dynamic JIT cores honour per-instruction trace hooks is
+    possible but expensive (every JIT block would need a trace
+    callback out) -- skipping for now since the warning covers
+    the "I didn't expect this" failure mode.
 
 ---
 
@@ -1070,7 +1080,6 @@ DPMI:
 
 	DPMI_PROBE.COM        INT 2Fh/1687h → "dpmi=present"
 	DPMI_INT31.COM        INT 31h default denial (AX=FF00 unhandled)
-	DPMI_STAGE3.COM       real→PM switch, spins (CI timeout = pass)
 	DPMI_STAGE5.COM       INT 21h from 16-bit PM
 	DPMI_STAGE5_32.COM    INT 21h from 32-bit PM (CB_IRETD path)
 	DPMI_STAGE4.COM       AX=0400/0006/0007 from PM

@@ -4568,6 +4568,18 @@ Bitu dosemu_int21() {
       // AL=0: load + execute (full nested child run).
       // AL=1: load only, return initial regs in param block (debuggers).
       // AL=3: load overlay -- caller-specified load segment, no reloc.
+      // AL=5: set execution state (DOS 5+).  Used by TSRs and memory
+      //       managers to arrange a deferred-entry point; DOS's own
+      //       IO.SYS is effectively the only caller in the wild.
+      //       Return success without actually switching state -- no
+      //       program we've met cares about the state actually being
+      //       installed, only about AL=5 not returning "invalid
+      //       function".
+      if (reg_al == 5) {
+        set_cf(false);
+        reg_ax = 0;
+        return CBRET_NONE;
+      }
       if (reg_al != 0 && reg_al != 1 && reg_al != 3) {
         return_error(1);
         break;
@@ -6352,9 +6364,14 @@ int run_program(const dosemu::Config &cfg) {
     // Keep the interpreter core for tracing.  dosbox auto-switches
     // to the dynamic JIT when a program enters PM; that's fine for
     // speed but bypasses core_normal where DOSEMU_CPU_TRACE is
-    // instrumented.  Force core=normal when the trace flag is set.
+    // instrumented.  Force core=normal when the trace flag is set
+    // and warn so the user knows their cycle budget just shrank.
     if (dosemu::g_debug.cpu_trace) {
       if (auto *s = control->GetSection("cpu")) s->HandleInputline("core=normal");
+      std::fprintf(stderr,
+          "dosemu: DOSEMU_CPU_TRACE is set -- forcing core=normal "
+          "(the dynamic JIT cores bypass the trace hooks); "
+          "execution will be measurably slower than normal.\n");
     }
 
     if (SDL_Init(SDL_INIT_AUDIO | SDL_INIT_VIDEO | SDL_INIT_TIMER) < 0) {
