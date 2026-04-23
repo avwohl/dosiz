@@ -16,7 +16,6 @@ Structured backlog as of end-of-session today.  Suite is 37/37 green.
 
     Severity  Issue                                        Evidence / gating
     --------  ------------------------------------------   ------------------
-    medium    FreeCOM→DJGPP→DJGPP grandchild chain         nested AH=4B paths
     low       cpp.exe crash (DJGPP libc 2.05 stack smash)  patch in patches/
               -- not our bug; DJGPP libc dormant since     + verify script
               2015                                         + docs/djgpp-libc-*.md
@@ -31,6 +30,20 @@ Structured backlog as of end-of-session today.  Suite is 37/37 green.
     `0x01B5:0x0029` (bytes from the general-info codepage/country
     fields misread as a far pointer) and crash with #UD at high EIP.
     Extended FC_SPAWN regression gate to include SEQ.EXE 1 3.
+
+    INT 21 AH=06 (Direct Console I/O) now handled: DL != 0xFF writes
+    DL to stdout; DL == 0xFF non-blocking read from stdin via
+    select().  Open Watcom wlink.exe uses this for its banner and
+    was stalling on "invalid function" returns.
+
+    FreeCOM → DJ_DJE → DJ_WRITE three-level nesting chain VERIFIED
+    working.  FC_SPAWN regression gate extended to cover it plus
+    several other spawn permutations (HELLO.COM + DJ_WRITE +
+    SEQ.EXE + DJ_DJE → DJ_WRITE).  The old WIP note about
+    "FreeCOM→DJGPP→DJGPP grandchild chain" being broken turned out
+    to be speculative -- the existing per-level LDT/exc/CB-stack/
+    IDT snapshot-restore infrastructure handles arbitrary depth
+    fine.
 
 ## Strategic backlog
 
@@ -98,31 +111,44 @@ this for its console output path.
 
 ## Dependency ordering for what's achievable
 
-    1.  Tier 3 LE loader pieces
-        ├─ DPMI service hand-off
-        ├─ RM INT reflection
-        └─ Import resolution
+All tier 1/2/3 work that can be done without external dependencies is
+DONE as of this session.  The remaining achievable items all depend
+on external factors:
 
-    2.  FreeCOM→DJGPP→DJGPP grandchild chain
-        (nested AH=4B state restore; our current impl only preserves
-         one level of parent state -- grandchild's cleanup clobbers
-         grandparent's bases)
-
-    3.  cpp.exe fix   ← depends on: someone rebuilds DJGPP libc with our
+    1.  cpp.exe fix   ← depends on: someone rebuilds DJGPP libc with our
                                      patches/djgpp-libc-c1loadef-stack-smash.patch
                                     OR patches the .zip binary
                                     OR DJGPP revives (10-year dormant)
 
+    2.  Full Open Watcom build       ← depends on: WATCOM env setup,
+                                                   system definition file,
+                                                   clib3r.lib + headers
+                                                   (Watcom-install config
+                                                    work, not emulator work)
+
+    3.  wd.exe actual debugging      ← depends on: *.dip plugins that
+                                                   aren't in the current
+                                                   open-watcom-v2 release
+
 ## Recommendation
 
-- **Developer-tool coverage**: chase #1 (LE loader).  Each remaining
-  piece is bounded and additive.  `wd.exe` running is a visible
-  milestone.
 - **Long-game goodwill**: submit
   `patches/djgpp-libc-c1loadef-stack-smash.patch` to
   `djgpp@delorie.com` or PR to `andrewwutw/build-djgpp`.  The patch is
-  now properly robust (dynamic realloc, no magic multiplier) and has a
+  properly robust (dynamic realloc, no magic multiplier) with a
   verification script.  Not coding work -- communications work.
+  Unlocks cpp.exe for the whole DJGPP ecosystem.
+
+- **Tier 4 work** (UMBs proper, DPMI 1.0 advertise) -- still
+  skippable.  Nothing we run needs it, and ambiguous benefit.
+
+- **Tier 5** (graphics/sound/net/games) -- still out of scope; no
+  plan.
+
+This is arguably a good stopping point for the emulator-code side of
+the project.  The remaining real-program-coverage improvements are
+all gated on external distributions (DJGPP libc update, Watcom lib
+install, Watcom DIP plugins).
 
 ---
 

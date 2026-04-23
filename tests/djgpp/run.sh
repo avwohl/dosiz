@@ -135,14 +135,27 @@ fi
 # Exercises both an RM child (HELLO.COM) and a PM child (DJGPP
 # DJ_WRITE.EXE) within a single FreeCOM session, then a post-spawn
 # builtin + exit to verify the REPL is still alive.
+# DJ_DJE hardcodes the path C:\TESTS\DJ_WRITE.EXE, so put DJ_WRITE.EXE
+# under a TESTS\ subdir as well as at root (where FreeCOM can find it
+# directly for the DJ_WRITE.exe command).
 fcs_dir=$(mktemp -d)
-cp build/dosemu tests/COMMAND.COM tests/HELLO.COM tests/DJ_WRITE.exe tests/SEQ.EXE "$fcs_dir/"
-fcsout=$(printf 'HELLO.COM\r\nDJ_WRITE.EXE\r\nSEQ.EXE 1 3\r\necho post-spawn-ok\r\nexit\r\n' \
-    | (cd "$fcs_dir" && timeout 10 ./dosemu COMMAND.COM 2>/dev/null) | tr -d '\r')
+mkdir -p "$fcs_dir/TESTS"
+cp build/dosemu tests/COMMAND.COM tests/HELLO.COM tests/DJ_WRITE.exe \
+   tests/SEQ.EXE tests/DJ_DJE.exe "$fcs_dir/"
+cp tests/DJ_WRITE.exe "$fcs_dir/TESTS/"
+fcsout=$(printf 'HELLO.COM\r\nDJ_WRITE.exe\r\nSEQ.EXE 1 3\r\nDJ_DJE.exe\r\necho post-spawn-ok\r\nexit\r\n' \
+    | (cd "$fcs_dir" && timeout 15 ./dosemu COMMAND.COM 2>/dev/null) | tr -d '\r')
 rm -rf "$fcs_dir"
+# FC_SPAWN now asserts:
+#   RM child (HELLO.COM)
+#   minimal PM child (DJ_WRITE.EXE)
+#   2000-era libc PM child (SEQ.EXE 1 3 -- prints "1" and "3")
+#   3-level nested chain FreeCOM -> DJ_DJE -> DJ_WRITE
+#   post-spawn builtin still works
 if echo "$fcsout" | grep -q 'post-spawn-ok' \
     && echo "$fcsout" | grep -q 'dosemu-hello-ok' \
     && echo "$fcsout" | grep -q 'dj-write=ok' \
+    && echo "$fcsout" | grep -q 'dj-dj-exec=ok' \
     && echo "$fcsout" | grep -Eq '^1$' \
     && echo "$fcsout" | grep -Eq '^3$'; then
     printf "  %-12s PASS\n" "FC_SPAWN"
