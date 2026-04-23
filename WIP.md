@@ -20,14 +20,20 @@ when landed.  Suite is 29/29 at the start of the backlog.
    (equivalently `lexyy.c` in 8.3) and rename afterwards.
 
 ## Medium (multi-session)
-3. **DOS/4GW transfer-buffer allocation.**  `wcc386.exe` +
-   `dos4gw.exe` emit `DOS/16M error: [13] cannot allocate transfer
-   buffer` after full init.  Instrument AH=48 / MCB state during
-   DOS/4GW init to see where conventional-memory accounting
-   diverges.
-4. **Large LE binaries (`wd.exe` ≥600KB).**  Exceed the current
-   MCB arena.  Needs either a bigger arena or a "load above 640K
-   into extended" path.
+3. ~~**DOS/4GW transfer-buffer allocation.**~~ Also already fixed
+   somewhere along the way.  With `DOSEMU_DPMI_RING3=1
+   DOSEMU_LE_AS_MZ=1`, `wcc386.exe hello.c` now runs through full
+   DOS/4GW init and compiles a tiny C program to a valid 305-byte
+   OMF object file.  No transfer-buffer error anymore.  Linking
+   with wlink.exe also mostly works (just missing a system
+   definition file for the DOS/4G target, which is a config issue
+   not a dosemu bug).
+4. ~~**Large LE binaries (`wd.exe` ≥600KB).**~~ Also already fixed.
+   `wd.exe` (710KB Watcom debugger) runs through init and emits
+   its usage banner.  `wcl386.exe` runs.  Large-LE arena seems
+   to no longer be a blocker.  (Subsequent compile+link failures
+   are Watcom config issues -- missing system definition + libs --
+   not dosemu bugs.)
 5. **DJGPP→DJGPP nested exec.**  Traced to LDT state handoff +
    buffer collision at the child stub's `[DS:0x764]`.  Likely
    needs ProcessState to snapshot/restore LDT slots 1-5 and
