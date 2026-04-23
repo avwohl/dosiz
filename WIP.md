@@ -1,3 +1,54 @@
+# What's left — 2026-04-22 backlog
+
+Work this list in order, top to bottom. Small wins first; each
+bullet is a commit or a small series.  Mark done with ~~strike~~
+when landed.  Suite is 29/29 at the start of the backlog.
+
+## Small (single-session)
+1. **LE selector fixups (types 0x02/0x03/0x06).**  `le_apply_fixups`
+   currently writes 0 for the selector field of these three fixup
+   types.  Replace with `objects[tgt_obj-1].ldt_sel`.  Unblocks
+   real Watcom binaries that use far pointers / vtables.
+2. **`flex -o out.c`.**  flex's getopt in this DJGPP build
+   probes the output file for read before creating it and bails
+   on ENOENT.  Investigate: may be flex-port quirk or an argv-
+   parsing edge case in our PSP cmd-tail encoding.
+
+## Medium (multi-session)
+3. **DOS/4GW transfer-buffer allocation.**  `wcc386.exe` +
+   `dos4gw.exe` emit `DOS/16M error: [13] cannot allocate transfer
+   buffer` after full init.  Instrument AH=48 / MCB state during
+   DOS/4GW init to see where conventional-memory accounting
+   diverges.
+4. **Large LE binaries (`wd.exe` ≥600KB).**  Exceed the current
+   MCB arena.  Needs either a bigger arena or a "load above 640K
+   into extended" path.
+5. **DJGPP→DJGPP nested exec.**  Traced to LDT state handoff +
+   buffer collision at the child stub's `[DS:0x764]`.  Likely
+   needs ProcessState to snapshot/restore LDT slots 1-5 and
+   preserve the argv[0] region across child execution.
+
+## Larger
+6. **`make` with real recipes.**  Need FreeCOM (FreeDOS's
+   COMMAND.COM) in `tests/`.  Real COMMAND.COM should run -- it's
+   "just" a real-mode DOS program -- but may hit weak BIOS stubs
+   (INT 10h screen, INT 16h keyboard) or its own startup checks
+   (AUTOEXEC.BAT, "am I the first shell?").  Discuss before
+   starting.
+7. **AH=4B AL=5** (Set execution state -- for debuggers).
+8. **QEMM parity** -- structural DPMI-host gap mentioned in the
+   earlier-session notes below.
+
+## Maintenance / paper cuts
+9. **`DPMI_STAGE3.COM`** hangs -- not in CI.  Either fix,
+   document, or remove.
+10. **`DOSEMU_CPU_TRACE` forcing `core=normal`** is surprising
+    (documented in DEBUGGING.md).  See if the JIT can be made to
+    honour memory watchpoints so the trace no longer needs to
+    downgrade the core.
+
+---
+
 # dosemu WIP — DJGPP RUNS END-TO-END (2026-04-22, arm64 Mac)
 
 **DJGPP programs now execute their main() and produce correct stdout
