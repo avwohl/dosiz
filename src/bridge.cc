@@ -1448,14 +1448,24 @@ Bitu dosemu_xms_driver() {
       const uint32_t soff = mem_readd(s + 6);
       const uint16_t dh   = mem_readw(s + 10);
       const uint32_t doff = mem_readd(s + 12);
+      // For handle=0 ("source/dest is real-mode memory"), XMS spec
+      // packs the 32-bit offset field as a seg:off far pointer
+      // (low word = offset, high word = segment).  Decoding it as
+      // a flat linear address would aim writes at MB-scale garbage
+      // addresses.  FreeCOM's XMS_Swap build depends on this.
+      auto rm_far_to_linear = [](uint32_t packed) -> uint32_t {
+        const uint32_t seg = (packed >> 16) & 0xFFFF;
+        const uint32_t off = packed & 0xFFFF;
+        return seg * 16u + off;
+      };
       uint32_t slin, dlin;
-      if (sh == 0) slin = soff;
+      if (sh == 0) slin = rm_far_to_linear(soff);
       else {
         auto it = s_xms_handles.find(sh);
         if (it == s_xms_handles.end()) { reg_ax = 0; reg_bl = 0xA3; return CBRET_NONE; }
         slin = it->second + soff;
       }
-      if (dh == 0) dlin = doff;
+      if (dh == 0) dlin = rm_far_to_linear(doff);
       else {
         auto it = s_xms_handles.find(dh);
         if (it == s_xms_handles.end()) { reg_ax = 0; reg_bl = 0xA5; return CBRET_NONE; }
