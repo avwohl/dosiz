@@ -1,8 +1,8 @@
 #
-# dosemu/src/CMakeLists.txt
+# dosiz/src/CMakeLists.txt
 #
 cmake_minimum_required(VERSION 3.25)
-project(dosemu CXX C)
+project(dosiz CXX C)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -44,8 +44,8 @@ pkg_check_modules(GLIB REQUIRED glib-2.0)
 link_directories(${GLIB_LIBRARY_DIRS})
 include_directories(${GLIB_INCLUDE_DIRS})
 
-add_executable(dosemu
-  dosemu.cc
+add_executable(dosiz
+  dosiz.cc
   config.cc
   bridge.cc
   debug_settings.cpp
@@ -56,16 +56,16 @@ add_executable(dosemu
 # codepage-mapping tables.  Symlink the committed
 # dosbox-staging/Resources/ into BOTH spots so the lookup succeeds on
 # every platform without a full install.
-add_custom_command(TARGET dosemu POST_BUILD
+add_custom_command(TARGET dosiz POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E create_symlink
           ${DB}/Resources
-          $<TARGET_FILE_DIR:dosemu>/resources
+          $<TARGET_FILE_DIR:dosiz>/resources
   COMMAND ${CMAKE_COMMAND} -E create_symlink
           ${DB}/Resources
-          $<TARGET_FILE_DIR:dosemu>/../Resources
+          $<TARGET_FILE_DIR:dosiz>/../Resources
   VERBATIM)
 
-target_include_directories(dosemu PRIVATE
+target_include_directories(dosiz PRIVATE
   ${DB}/include
   ${DB_BUILD}                    # generated config.h
   ${DB}/src/libs/loguru          # loguru.hpp for verbosity control
@@ -99,7 +99,7 @@ set(DB_ARCHIVES
 if(APPLE)
   # Mac: ld64 resolves circular deps via multi-pass, no --start-group needed.
   # Subprojects are system libs on Mac (except mt32emu, which meson built).
-  target_link_libraries(dosemu PRIVATE
+  target_link_libraries(dosiz PRIVATE
     ${DB_ARCHIVES}
     ${DB_BUILD}/subprojects/munt-libmt32emu_2_7_1/libmt32emu.dylib
     SDL2::SDL2
@@ -111,7 +111,7 @@ if(APPLE)
   find_library(OPUSFILE opusfile REQUIRED)
   find_library(IIR iir REQUIRED)
   find_library(PNG png REQUIRED)
-  target_link_libraries(dosemu PRIVATE
+  target_link_libraries(dosiz PRIVATE
     ${SPEEX} ${OPUSFILE} ${IIR} ${PNG} z
     "-framework CoreFoundation"
     "-framework CoreAudio"
@@ -122,13 +122,13 @@ if(APPLE)
     "-framework OpenGL"
   )
   # rpath so the mt32emu dylib is found at runtime next to the executable.
-  set_target_properties(dosemu PROPERTIES
+  set_target_properties(dosiz PROPERTIES
     BUILD_RPATH "${DB_BUILD}/subprojects/munt-libmt32emu_2_7_1"
     INSTALL_RPATH "@loader_path/../dosbox-staging/build/subprojects/munt-libmt32emu_2_7_1"
   )
 else()
   # Linux: GNU ld + --start-group for circular archive refs.
-  target_link_libraries(dosemu PRIVATE
+  target_link_libraries(dosiz PRIVATE
     -Wl,--start-group
     ${DB_ARCHIVES}
     ${DB_BUILD}/subprojects/libpng-1.6.40/libpng16.a
@@ -149,7 +149,7 @@ else()
   find_library(ASOUND asound REQUIRED)
   find_library(XI Xi REQUIRED)
   find_library(GL GL REQUIRED)
-  target_link_libraries(dosemu PRIVATE
+  target_link_libraries(dosiz PRIVATE
     ${SDL2_NET} ${SLIRP} ${SPEEX} ${OPUSFILE}
     ${FLUIDSYNTH} ${ASOUND} ${XI} ${GL}
   )

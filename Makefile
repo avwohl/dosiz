@@ -10,7 +10,7 @@ JOBS           ?= $(shell nproc 2>/dev/null || echo 4)
 DB_SRC         := dosbox-staging
 DB_BUILD       := $(DB_SRC)/build
 PATCH          := patches/sdlmain-expose-setup.patch
-PATCH_MARKER   := $(DB_SRC)/.dosemu-patched
+PATCH_MARKER   := $(DB_SRC)/.dosiz-patched
 
 .PHONY: all build clean distclean configure dosbox patch
 

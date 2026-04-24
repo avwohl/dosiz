@@ -41,7 +41,7 @@ BITS 16
     test ax, ax
     jnz  switch_failed
 
-    ; CWSDPMI (and dosemu by default) hands the client a 16-bit CS
+    ; CWSDPMI (and dosiz by default) hands the client a 16-bit CS
     ; regardless of the AX=1 "32-bit PM" entry (control.c:469
     ; hardcodes D=0).  Stubs that want 32-bit code alloc their own
     ; descriptor and far-jump to it.  Do exactly that before running

@@ -1,16 +1,16 @@
 //
 // bridge.h — thin C++ wrapper around the in-process dosbox-staging library.
 //
-// Isolates every #include of dosbox internals to bridge.cc so dosemu.cc
+// Isolates every #include of dosbox internals to bridge.cc so dosiz.cc
 // stays readable.
 //
 
-#ifndef DOSEMU_BRIDGE_H
-#define DOSEMU_BRIDGE_H
+#ifndef DOSIZ_BRIDGE_H
+#define DOSIZ_BRIDGE_H
 
 #include "config.h"
 
-namespace dosemu::bridge {
+namespace dosiz::bridge {
 
 const char *dosbox_version();
 
@@ -23,6 +23,6 @@ const char *dosbox_version();
 // startup failure.
 int run_program(const Config &cfg);
 
-} // namespace dosemu::bridge
+} // namespace dosiz::bridge
 
 #endif

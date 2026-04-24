@@ -1,5 +1,5 @@
 /* bigtest.cpp -- 2.3 MB DJGPP C++ binary, regression gate for "does
- * dosemu's DPMI host behave correctly under a real, nontrivial 32-bit
+ * dosiz's DPMI host behave correctly under a real, nontrivial 32-bit
  * PM client with C++ STL, regex, global constructors/destructors, and
  * enough code size that memory layout stresses the MCB allocator".
  *

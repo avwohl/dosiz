@@ -1,5 +1,5 @@
 //
-// config.cc — .cfg parser and env var expander for dosemu.
+// config.cc — .cfg parser and env var expander for dosiz.
 //
 // The parser is a straight port of cpmemu's load_config_file() with a few
 // DOS-specific keys added (machine, cputype, memsize, drive_C, ...).
@@ -16,7 +16,7 @@
 #include <fstream>
 #include <sys/stat.h>
 
-namespace dosemu {
+namespace dosiz {
 
 namespace {
 
@@ -62,7 +62,7 @@ std::string expand_env_vars(const std::string &s) {
 bool load_config_file(const std::string &path, Config &cfg) {
   std::ifstream in(path);
   if (!in.is_open()) {
-    std::fprintf(stderr, "dosemu: cannot open config file: %s\n", path.c_str());
+    std::fprintf(stderr, "dosiz: cannot open config file: %s\n", path.c_str());
     return false;
   }
 
@@ -78,7 +78,7 @@ bool load_config_file(const std::string &path, Config &cfg) {
 
     size_t eq = line.find('=');
     if (eq == std::string::npos) {
-      std::fprintf(stderr, "dosemu: %s:%d: missing '='\n", path.c_str(), lineno);
+      std::fprintf(stderr, "dosiz: %s:%d: missing '='\n", path.c_str(), lineno);
       continue;
     }
 
@@ -216,7 +216,7 @@ std::string resolve_program_path(const std::string &name) {
   }
 
   std::vector<std::string> dirs = {""};      // empty = CWD
-  if (const char *env = dosemu::g_debug.path) {
+  if (const char *env = dosiz::g_debug.path) {
     std::string p = env;
     size_t start = 0;
     while (start <= p.size()) {
@@ -247,4 +247,4 @@ std::string sidecar_cfg(const std::string &program_path) {
   return "";
 }
 
-} // namespace dosemu
+} // namespace dosiz

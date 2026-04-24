@@ -3,7 +3,7 @@ name: CI
 on:
   # Run CI only on tagged releases + manual triggers.  Day-to-day
   # commits to main are fast enough to self-test locally; running the
-  # full dosbox-staging build + dosemu suite on every push burns a lot
+  # full dosbox-staging build + dosiz suite on every push burns a lot
   # of GitHub Actions minutes for little marginal value.
   push:
     tags: ['v*', 'ci-*']
@@ -35,28 +35,28 @@ jobs:
           path: dosbox-staging/build
           key: dosbox-staging-${{ hashFiles('dosbox-staging/meson.build', 'dosbox-staging/meson_options.txt', 'patches/*.patch') }}
 
-      - name: Build (applies submodule patch, meson+ninja, then dosemu)
+      - name: Build (applies submodule patch, meson+ninja, then dosiz)
         run: make -j$(nproc)
 
       - name: Smoke (--version)
-        run: build/dosemu --version
+        run: build/dosiz --version
 
       - name: Smoke (run HELLO.COM)
         run: |
-          output=$(build/dosemu tests/HELLO.COM 2>/dev/null)
-          echo "dosemu output: $output"
-          echo "$output" | grep -q 'dosemu-hello-ok'
+          output=$(build/dosiz tests/HELLO.COM 2>/dev/null)
+          echo "dosiz output: $output"
+          echo "$output" | grep -q 'dosiz-hello-ok'
 
       - name: Smoke (run HELLO.EXE, verify MZ loader)
         run: |
-          output=$(build/dosemu tests/HELLO.EXE 2>/dev/null)
-          echo "dosemu output: $output"
-          echo "$output" | grep -q 'dosemu-hello-exe-ok'
+          output=$(build/dosiz tests/HELLO.EXE 2>/dev/null)
+          echo "dosiz output: $output"
+          echo "$output" | grep -q 'dosiz-hello-exe-ok'
 
       - name: Smoke (run SYSCALLS.COM, verify AH=30/48/25/35)
         run: |
-          output=$(build/dosemu tests/SYSCALLS.COM 2>/dev/null)
-          echo "dosemu output: $output"
+          output=$(build/dosiz tests/SYSCALLS.COM 2>/dev/null)
+          echo "dosiz output: $output"
           echo "$output" | grep -q 'dosver=6.22'
           # MCB allocator places the first MCB at 0x2000, so data lands
           # at 0x2001.  The old bump allocator returned 0x2000.
@@ -65,14 +65,14 @@ jobs:
 
       - name: Smoke (MCB chain reuses memory after free)
         run: |
-          out=$(build/dosemu tests/MCB_TEST.COM 2>/dev/null)
-          echo "dosemu output: $out"
+          out=$(build/dosiz tests/MCB_TEST.COM 2>/dev/null)
+          echo "dosiz output: $out"
           echo "$out" | grep -q 'alloc-free-alloc-same'
 
       - name: "DPMI stage 2: detection reports present"
         run: |
-          out=$(build/dosemu tests/DPMI_PROBE.COM 2>/dev/null)
-          echo "dosemu output: $out"
+          out=$(build/dosiz tests/DPMI_PROBE.COM 2>/dev/null)
+          echo "dosiz output: $out"
           echo "$out" | grep -q 'dpmi=present'
 
       - name: "DPMI stage 5: INT 21h from protected mode reflected to host"
@@ -81,8 +81,8 @@ jobs:
           # go through our IDT gate -> dosbox's CB_INT21 callback path ->
           # our host C++ handler (SegPhys() makes the memory accesses work
           # transparently in PM).  Exit code 0 = fully end-to-end PM I/O.
-          out=$(build/dosemu tests/DPMI_STAGE5.COM 2>/dev/null)
-          echo "dosemu output: $out"
+          out=$(build/dosiz tests/DPMI_STAGE5.COM 2>/dev/null)
+          echo "dosiz output: $out"
           echo "$out" | grep -q 'dpmi-stage5=hello-from-pm'
 
       - name: "DPMI stage 5 (32-bit PM): INT 21h from 32-bit client reflects"
@@ -92,8 +92,8 @@ jobs:
           # Requires the IRETD callback stub (`66 CF`) to unwind the 12-byte
           # frame the 32-bit gate pushes -- a 16-bit IRET pops CS from the
           # high half of EIP (=0 = null descriptor) and the emulator aborts.
-          out=$(build/dosemu tests/DPMI_STAGE5_32.COM 2>/dev/null)
-          echo "dosemu output: $out"
+          out=$(build/dosiz tests/DPMI_STAGE5_32.COM 2>/dev/null)
+          echo "dosiz output: $out"
           echo "$out" | grep -q 'dpmi-stage5-32=hello-from-pm32'
 
       - name: Baseline (INT 31h denial stub returns CF=1 / AX=8001h)
@@ -101,8 +101,8 @@ jobs:
           # DPMI_INT31.COM calls an unhandled sub-function (AX=FF00h) so
           # the default-deny path is exercised even after stage 4 landed
           # real handlers for AX=0400/0006/0007.
-          out=$(build/dosemu tests/DPMI_INT31.COM 2>/dev/null)
-          echo "dosemu output: $out"
+          out=$(build/dosiz tests/DPMI_INT31.COM 2>/dev/null)
+          echo "dosiz output: $out"
           echo "$out" | grep -q 'int31=denied'
 
       - name: "DPMI stage 4: INT 31h version + seg base get/set from PM"
@@ -113,8 +113,8 @@ jobs:
           #   AX=0006 Get segment base    -> reads same bytes back
           #   AX=0006 with an out-of-range selector returns CF=1/AX=8022h
           # A regression in any sub-function prints a distinct fail tag.
-          out=$(build/dosemu tests/DPMI_STAGE4.COM 2>/dev/null)
-          echo "dosemu output: $out"
+          out=$(build/dosiz tests/DPMI_STAGE4.COM 2>/dev/null)
+          echo "dosiz output: $out"
           echo "$out" | grep -q 'dpmi-stage4=ok'
 
       - name: "DPMI stage 4b: LDT descriptor alloc/free/convert"
@@ -125,8 +125,8 @@ jobs:
           # extended to accept LDT selectors.  The alias for the PSP
           # segment is validated by reading the INT 20h marker word
           # through the newly-allocated LDT-selector-loaded ES.
-          out=$(build/dosemu tests/DPMI_STAGE4B.COM 2>/dev/null)
-          echo "dosemu output: $out"
+          out=$(build/dosiz tests/DPMI_STAGE4B.COM 2>/dev/null)
+          echo "dosiz output: $out"
           echo "$out" | grep -q 'dpmi-stage4b=ok'
 
       - name: "DPMI stage 4c: IVT read/write + free memory info"
@@ -136,8 +136,8 @@ jobs:
           # (largest-free-block derived from the MCB chain, most other
           # fields 0xFFFFFFFF "not supported").  Real clients call these
           # during init before doing anything interesting.
-          out=$(build/dosemu tests/DPMI_STAGE4C.COM 2>/dev/null)
-          echo "dosemu output: $out"
+          out=$(build/dosiz tests/DPMI_STAGE4C.COM 2>/dev/null)
+          echo "dosiz output: $out"
           echo "$out" | grep -q 'dpmi-stage4c=ok'
 
       - name: "DPMI reflection: INT 10h AH=0F from 16-bit PM reaches BIOS"
@@ -149,8 +149,8 @@ jobs:
           # routing the PM INT to the same native callback the real-mode
           # vector points at.  This fixture asks video mode (INT 10h
           # AH=0F) from both RM and PM and verifies the results match.
-          out=$(build/dosemu tests/DPMI_REFLECT.COM 2>/dev/null)
-          echo "dosemu output: $out"
+          out=$(build/dosiz tests/DPMI_REFLECT.COM 2>/dev/null)
+          echo "dosiz output: $out"
           echo "$out" | grep -q 'dpmi-reflect=ok'
 
       - name: "DPMI integration: chain stages 2-6 + reflection in 32-bit PM"
@@ -163,8 +163,8 @@ jobs:
           # AX=0502 free, AX=0001 free LDT, exit 0.  A single pass
           # validates that every DPMI service integrates cleanly with
           # every other one from a 32-bit client's perspective.
-          out=$(build/dosemu tests/DPMI_INTEGRATION.COM 2>/dev/null)
-          echo "dosemu output: $out"
+          out=$(build/dosiz tests/DPMI_INTEGRATION.COM 2>/dev/null)
+          echo "dosiz output: $out"
           echo "$out" | grep -q 'dpmi-integration=ok'
 
       - name: "AH=4Bh + AH=4Dh: 3-level nesting (grand -> middle -> child)"
@@ -179,8 +179,8 @@ jobs:
           program = $workdir/GRAND.COM
           drive_C = $workdir
           EOF
-          out=$(build/dosemu "$workdir/run.cfg" 2>/dev/null)
-          echo "dosemu output: $out"
+          out=$(build/dosiz "$workdir/run.cfg" 2>/dev/null)
+          echo "dosiz output: $out"
           echo "$out" | grep -q 'child=ran'
           echo "$out" | grep -q 'middle=ok'
           echo "$out" | grep -q 'grand=ok'
@@ -193,8 +193,8 @@ jobs:
           program = $workdir/SPAWN_AL1.COM
           drive_C = $workdir
           EOF
-          out=$(build/dosemu "$workdir/run.cfg" 2>/dev/null)
-          echo "dosemu output: $out"
+          out=$(build/dosiz "$workdir/run.cfg" 2>/dev/null)
+          echo "dosiz output: $out"
           echo "$out" | grep -q 'spawn-al1=ok'
 
       - name: AH=4Bh Load and Execute Program (spawn child, resume parent)
@@ -216,8 +216,8 @@ jobs:
           program = $workdir/SPAWN.COM
           drive_C = $workdir
           EOF
-          out=$(build/dosemu "$workdir/run.cfg" 2>/dev/null)
-          echo "dosemu output: $out"
+          out=$(build/dosiz "$workdir/run.cfg" 2>/dev/null)
+          echo "dosiz output: $out"
           echo "$out" | grep -q 'child=ran'
           echo "$out" | grep -q 'spawn=ok'
 
@@ -229,8 +229,8 @@ jobs:
           # AX=0203 writes the IDT gate alongside the sel:off table,
           # so dosbox's CPU_Interrupt path actually dispatches the
           # exception to the client.
-          out=$(build/dosemu tests/DPMI_EXC.COM 2>/dev/null)
-          echo "dosemu output: $out"
+          out=$(build/dosiz tests/DPMI_EXC.COM 2>/dev/null)
+          echo "dosiz output: $out"
           echo "$out" | grep -q 'dpmi-exc=ok'
 
       - name: DPMI AX=0303/0304 real-mode callback (32-bit PM)
@@ -241,8 +241,8 @@ jobs:
           # CS is that 32-bit alias; do_rm_callback's RETF-frame push
           # must be 8 bytes (not 4) because 32-bit RETF pops EIP+CS as
           # two dwords.
-          out=$(build/dosemu tests/DPMI_RMCB32.COM 2>/dev/null)
-          echo "dosemu output: $out"
+          out=$(build/dosiz tests/DPMI_RMCB32.COM 2>/dev/null)
+          echo "dosiz output: $out"
           echo "$out" | grep -q 'dpmi-rmcb32=ok'
 
       - name: DPMI AX=0303/0304 real-mode callback addresses
@@ -253,20 +253,20 @@ jobs:
           # returns.  Callback mutates struct.EAX to 0xABCD; fixture
           # verifies after 0301 completes.  Tests nested RM->PM->RM
           # mode switching.
-          out=$(build/dosemu tests/DPMI_RMCB.COM 2>/dev/null)
-          echo "dosemu output: $out"
+          out=$(build/dosiz tests/DPMI_RMCB.COM 2>/dev/null)
+          echo "dosiz output: $out"
           echo "$out" | grep -q 'dpmi-rmcb=ok'
 
       - name: DPMI descriptor mgmt AX=0008/0009/000A/000B/000C
         run: |
-          out=$(build/dosemu tests/DPMI_DESCMGMT.COM 2>/dev/null)
-          echo "dosemu output: $out"
+          out=$(build/dosiz tests/DPMI_DESCMGMT.COM 2>/dev/null)
+          echo "dosiz output: $out"
           echo "$out" | grep -q 'dpmi-descmgmt=ok'
 
       - name: DPMI extra AX=0102/0305/0306/0801/0B00
         run: |
-          out=$(build/dosemu tests/DPMI_EXTRA.COM 2>/dev/null)
-          echo "dosemu output: $out"
+          out=$(build/dosiz tests/DPMI_EXTRA.COM 2>/dev/null)
+          echo "dosiz output: $out"
           echo "$out" | grep -q 'dpmi-extra=ok'
 
       - name: DPMI stubs AX=0202/0203/0600/0601/0604/0800
@@ -276,8 +276,8 @@ jobs:
           # paging), get page size (0604 = 4096), physical address
           # mapping (0800 -- linear=physical pass-through).  All
           # probed by real clients during init.
-          out=$(build/dosemu tests/DPMI_STUBS.COM 2>/dev/null)
-          echo "dosemu output: $out"
+          out=$(build/dosiz tests/DPMI_STUBS.COM 2>/dev/null)
+          echo "dosiz output: $out"
           echo "$out" | grep -q 'dpmi-stubs=ok'
 
       - name: DPMI AX=0210/0212 + 0900/0901/0902 PM IDT + virtual IF
@@ -286,8 +286,8 @@ jobs:
           # installs its own PM INT handlers via 0212.  Virtual IF
           # state is tracked as a shadow boolean: 0900 get+disable,
           # 0901 get+enable, 0902 read.
-          out=$(build/dosemu tests/DPMI_PMIDT.COM 2>/dev/null)
-          echo "dosemu output: $out"
+          out=$(build/dosiz tests/DPMI_PMIDT.COM 2>/dev/null)
+          echo "dosiz output: $out"
           echo "$out" | grep -q 'dpmi-pmidt=ok'
 
       - name: "DPMI AX=0100/0101: DOS memory alloc/free (hybrid RM+PM)"
@@ -298,8 +298,8 @@ jobs:
           # DOS calls OR the PM selector in-mode; both point at the
           # same bytes.  AX=0002 (segment-to-descriptor) must return
           # the cached selector for identity semantics.
-          out=$(build/dosemu tests/DPMI_DOSMEM.COM 2>/dev/null)
-          echo "dosemu output: $out"
+          out=$(build/dosiz tests/DPMI_DOSMEM.COM 2>/dev/null)
+          echo "dosiz output: $out"
           echo "$out" | grep -q 'dpmi-dosmem=ok'
 
       - name: "DPMI AX=0302: Call Real Mode Procedure With IRET Frame"
@@ -309,8 +309,8 @@ jobs:
           # jumping to the client's procedure.  The procedure's IRET
           # lands on the stop callback's FE 38 stub which returns
           # CBRET_STOP, unwinding the nested DOSBOX_RunMachine.
-          out=$(build/dosemu tests/DPMI_CALLRMI.COM 2>/dev/null)
-          echo "dosemu output: $out"
+          out=$(build/dosiz tests/DPMI_CALLRMI.COM 2>/dev/null)
+          echo "dosiz output: $out"
           echo "$out" | grep -q 'dpmi-callrmi=ok'
 
       - name: "DPMI AX=0301: Call Real Mode Procedure With Far Return"
@@ -320,8 +320,8 @@ jobs:
           # CALLBACK_RunRealInt.  Fixture bundles its own RM routine
           # (`mov ax, 0x1234; retf`) inside the .COM, passes CS:IP to
           # AX=0301, and verifies struct.EAX came back as 0x1234.
-          out=$(build/dosemu tests/DPMI_CALLRM.COM 2>/dev/null)
-          echo "dosemu output: $out"
+          out=$(build/dosiz tests/DPMI_CALLRM.COM 2>/dev/null)
+          echo "dosiz output: $out"
           echo "$out" | grep -q 'dpmi-callrm=ok'
 
       - name: "DPMI AX=0300: Simulate Real Mode Interrupt"
@@ -335,8 +335,8 @@ jobs:
           # refresh), write RM results back to the struct.
           # Fixture invokes INT 1Ah AH=00 (BIOS tick count) and
           # verifies the struct's ECX/EDX came back non-zero.
-          out=$(build/dosemu tests/DPMI_SIMRM.COM 2>/dev/null)
-          echo "dosemu output: $out"
+          out=$(build/dosiz tests/DPMI_SIMRM.COM 2>/dev/null)
+          echo "dosiz output: $out"
           echo "$out" | grep -q 'dpmi-simrm=ok'
 
       - name: "DPMI stage 6b: AX=0503 resize memory block (shrink + grow)"
@@ -345,20 +345,20 @@ jobs:
           # 128 (reclaims the freshly-split free tail).  AX=0503 returns
           # the same handle + base on in-place ops; a real DPMI spec
           # host may relocate on grow but we explicitly don't.
-          out=$(build/dosemu tests/DPMI_STAGE6B.COM 2>/dev/null)
-          echo "dosemu output: $out"
+          out=$(build/dosiz tests/DPMI_STAGE6B.COM 2>/dev/null)
+          echo "dosiz output: $out"
           echo "$out" | grep -q 'dpmi-stage6b=ok'
 
       - name: "DPMI reflection (32-bit): INT 10h AH=0F from 32-bit PM"
         run: |
           # Same as DPMI_REFLECT.COM but enters PM with AX=1 (32-bit).
           # The 32-bit gate pushes a 12-byte frame that plain `CF` (16-bit
-          # IRET) can't unwind, so dosemu now builds per-vector shims
+          # IRET) can't unwind, so dosiz now builds per-vector shims
           # ending in `66 CF` (IRETD) at PM_SHIM_SEG and points 32-bit
           # IDT gates at them.  Mines the existing RM stub for each
           # vector's `FE 38 LL HH` native-call number.
-          out=$(build/dosemu tests/DPMI_REFLECT32.COM 2>/dev/null)
-          echo "dosemu output: $out"
+          out=$(build/dosiz tests/DPMI_REFLECT32.COM 2>/dev/null)
+          echo "dosiz output: $out"
           echo "$out" | grep -q 'dpmi-reflect32=ok'
 
       - name: "DPMI stage 6: alloc, write/read round-trip, free"
@@ -368,8 +368,8 @@ jobs:
           # repoints the PM ES selector at the block (AX=0007), writes
           # and reads back a pattern at offset 0 and 254 to verify the
           # full 256-byte span is mapped, then frees via AX=0502.
-          out=$(build/dosemu tests/DPMI_STAGE6.COM 2>/dev/null)
-          echo "dosemu output: $out"
+          out=$(build/dosiz tests/DPMI_STAGE6.COM 2>/dev/null)
+          echo "dosiz output: $out"
           echo "$out" | grep -q 'dpmi-stage6=ok'
 
       - name: DOS/4GW detection probe (INT 21h AH=FFh DH=00h DL=78h)
@@ -380,8 +380,8 @@ jobs:
           # ASCII) -- per RBIL.  We return the same.  Without this,
           # Watcom-compiled 32-bit binaries take their no-extender
           # fallback path and GP-fault shortly after entry.
-          out=$(build/dosemu tests/DOS4G_PROBE.COM 2>/dev/null)
-          echo "dosemu output: $out"
+          out=$(build/dosiz tests/DOS4G_PROBE.COM 2>/dev/null)
+          echo "dosiz output: $out"
           echo "$out" | grep -q 'dos4g-probe=ok'
 
       - name: DPMI 1.0 extensions (AX=0401/000D/0506/0507/0508/0E00/0E01)
@@ -392,22 +392,22 @@ jobs:
           # Get/Set Page Attributes, Map Device (expected failure),
           # Get/Set Coprocessor Status.  A green run proves every
           # 1.0-path returns the correct CF+AX.
-          out=$(build/dosemu tests/DPMI_V10.COM 2>/dev/null)
-          echo "dosemu output: $out"
+          out=$(build/dosiz tests/DPMI_V10.COM 2>/dev/null)
+          echo "dosiz output: $out"
           echo "$out" | grep -q 'dpmi-v10=ok'
 
       - name: "DPMI AX=0501: pm_arena tier (>1MB allocation above 1MB)"
         run: |
           # Requesting >0xFFFFh paragraphs can't fit the MCB arena, so
-          # dosemu's AX=0501 handler falls back to pm_alloc in the
+          # dosiz's AX=0501 handler falls back to pm_alloc in the
           # extended-memory pool above 1MB.  For pm_arena blocks the
           # handle encoding is SI:DI = high:low of the host linear base
           # (SI >= 0x0010).  Fixture verifies the tier switch, the new
           # handle encoding, a write/read round-trip through an ES
           # selector pointed at the block, in-place shrink via AX=0503,
           # and free via AX=0502.
-          out=$(build/dosemu tests/DPMI_PMALLOC.COM 2>/dev/null)
-          echo "dosemu output: $out"
+          out=$(build/dosiz tests/DPMI_PMALLOC.COM 2>/dev/null)
+          echo "dosiz output: $out"
           echo "$out" | grep -q 'dpmi-pmalloc=ok'
 
       - name: "LE loader: regenerate + verify fixup walker"
@@ -415,7 +415,7 @@ jobs:
           # Python generator emits a hand-crafted minimal LE binary with
           # one code object, one data object, and a single type-7 (32-bit
           # offset) internal-reference fixup pointing from obj1 into obj2.
-          # dosemu reports `LE fixup:` lines to stderr; we assert the
+          # dosiz reports `LE fixup:` lines to stderr; we assert the
           # fixup resolved to host_seg[obj2]*16 + 0, proving the walker
           # read fixup_page_table + fixup_record_table correctly.
           # Regenerate and assert the committed binary is bit-identical
@@ -425,8 +425,8 @@ jobs:
           cp tests/LE_MIN.EXE "$RUNNER_TEMP/le_min_committed.exe"
           python3 tests/gen_le_min.py
           diff -q "$RUNNER_TEMP/le_min_committed.exe" tests/LE_MIN.EXE
-          out=$(build/dosemu tests/LE_MIN.EXE 2>&1)
-          echo "dosemu output:"
+          out=$(build/dosiz tests/LE_MIN.EXE 2>&1)
+          echo "dosiz output:"
           echo "$out"
           echo "$out" | grep -q 'LE fixups applied: 2'
           # Extract obj2's host base from the loader log and verify the
@@ -446,29 +446,29 @@ jobs:
           # in the load -> descriptor -> mode-switch -> IDT-gate
           # pipeline dumps a dosbox E_Exit + non-zero rc -- which
           # `bash -e` will turn into a hard CI failure on this line.
-          build/dosemu tests/LE_MIN.EXE >/dev/null 2>&1
+          build/dosiz tests/LE_MIN.EXE >/dev/null 2>&1
           echo "LE_MIN ran to exit code 0"
 
       - name: Real compiler output (Open Watcom 16-bit hello)
         run: |
-          out=$(build/dosemu tests/HELLO_W.EXE 2>/dev/null)
-          echo "dosemu output: $out"
+          out=$(build/dosiz tests/HELLO_W.EXE 2>/dev/null)
+          echo "dosiz output: $out"
           echo "$out" | grep -q 'hello from watcom'
 
       - name: Real compiler output (bcc hello)
         run: |
-          out=$(build/dosemu tests/HELLO_B.COM 2>/dev/null)
-          echo "dosemu output: $out"
+          out=$(build/dosiz tests/HELLO_B.COM 2>/dev/null)
+          echo "dosiz output: $out"
           echo "$out" | grep -q 'hello from bcc'
 
       - name: Real DOS-hosted Watcom tool (exe2bin.exe prints banner)
         run: |
           # EXE2BIN prints its usage banner then exits with rc=255 (Watcom's
           # "no file supplied" convention) -- `bash -e` would kill the step
-          # on that nonzero subshell exit even though dosemu did its job.
+          # on that nonzero subshell exit even though dosiz did its job.
           # We only care that the banner appears in output, not about rc.
-          out=$(build/dosemu tests/EXE2BIN.EXE 2>/dev/null || true)
-          echo "dosemu output: $out"
+          out=$(build/dosiz tests/EXE2BIN.EXE 2>/dev/null || true)
+          echo "dosiz output: $out"
           # Real Open Watcom DOS-hosted binary from the official distribution.
           echo "$out" | grep -q 'Open Watcom EXE to Binary Converter'
 
@@ -488,7 +488,7 @@ jobs:
           drive_C = $workdir
           EOF
           # xcopy prompts when the dest doesn't exist; 'F' = "it's a file".
-          echo 'F' | build/dosemu "$workdir/r.cfg" 2>/dev/null
+          echo 'F' | build/dosiz "$workdir/r.cfg" 2>/dev/null
           diff "$workdir/src.txt" "$workdir/dst.txt"
 
       - name: Smoke (.cfg drives + default_mode=text)
@@ -500,13 +500,13 @@ jobs:
           drive_C = $workdir
           default_mode = text
           EOF
-          build/dosemu "$workdir/write.cfg" 2>/dev/null
+          build/dosiz "$workdir/write.cfg" 2>/dev/null
           if grep -qU $'\r' "$workdir/WROTE.TXT"; then
             echo "FAIL: WROTE.TXT still contains CR in text mode"
             xxd "$workdir/WROTE.TXT"
             exit 1
           fi
-          grep -q 'dosemu-wrote-ok' "$workdir/WROTE.TXT"
+          grep -q 'dosiz-wrote-ok' "$workdir/WROTE.TXT"
           grep -q 'from-cfg'        "$workdir/WROTE.TXT"
 
       - name: Smoke (.cfg exact file mapping redirects host path)
@@ -518,7 +518,7 @@ jobs:
           drive_C = $workdir
           WROTE.TXT = $workdir/renamed.out text
           EOF
-          build/dosemu "$workdir/exact.cfg" 2>/dev/null
+          build/dosiz "$workdir/exact.cfg" 2>/dev/null
           # Must land in renamed.out, not WROTE.TXT.
           test -f "$workdir/renamed.out"
           test ! -f "$workdir/WROTE.TXT"
@@ -533,7 +533,7 @@ jobs:
           drive_C = $workdir
           *.TXT = text
           EOF
-          build/dosemu "$workdir/wild.cfg" 2>/dev/null
+          build/dosiz "$workdir/wild.cfg" 2>/dev/null
           if grep -qU $'\r' "$workdir/WROTE.TXT"; then
             echo "FAIL: wildcard *.TXT=text did not strip CR"
             xxd "$workdir/WROTE.TXT"
@@ -549,7 +549,7 @@ jobs:
           program = $GITHUB_WORKSPACE/tests/LISTDIR.COM
           drive_C = $workdir
           EOF
-          out=$(build/dosemu "$workdir/run.cfg" 2>/dev/null)
+          out=$(build/dosiz "$workdir/run.cfg" 2>/dev/null)
           echo "$out"
           echo "$out" | grep -q '^HELLO\.TST$'
           echo "$out" | grep -q '^WORLD\.TST$'
@@ -566,7 +566,7 @@ jobs:
           program = $GITHUB_WORKSPACE/tests/LISTDIR.COM
           drive_C = $workdir
           EOF
-          out=$(build/dosemu "$workdir/run.cfg" 2>/dev/null)
+          out=$(build/dosiz "$workdir/run.cfg" 2>/dev/null)
           echo "$out"
           echo "$out" | grep -q '^LONGFI~1\.TST$'
           echo "$out" | grep -q '^LONGFI~2\.TST$'
@@ -581,7 +581,7 @@ jobs:
           drive_C = $workdir
           default_mode = auto
           EOF
-          build/dosemu "$workdir/run.cfg" 2>/dev/null
+          build/dosiz "$workdir/run.cfg" 2>/dev/null
           if grep -qU $'\r' "$workdir/WROTE.TXT"; then
             echo "FAIL: auto mode did not apply text translation to .TXT"
             xxd "$workdir/WROTE.TXT"
@@ -590,8 +590,8 @@ jobs:
 
       - name: Smoke (stdin input via AH=01h)
         run: |
-          out=$(echo 'hi-stdin' | build/dosemu tests/ECHOIN.COM 2>/dev/null)
-          echo "dosemu output: $out"
+          out=$(echo 'hi-stdin' | build/dosiz tests/ECHOIN.COM 2>/dev/null)
+          echo "dosiz output: $out"
           echo "$out" | grep -q 'hi-stdin'
 
       - name: Smoke (CAT.COM read path, binary mode is passthrough)
@@ -604,7 +604,7 @@ jobs:
           drive_C = $workdir
           default_mode = binary
           EOF
-          out=$(build/dosemu "$workdir/bin.cfg" 2>/dev/null)
+          out=$(build/dosiz "$workdir/bin.cfg" 2>/dev/null)
           echo "out: $(printf '%q' "$out")"
           # Output should match input exactly (\n preserved, no \r).
           if printf '%s' "$out" | grep -qU $'\r'; then
@@ -623,32 +623,32 @@ jobs:
           drive_C = $workdir
           default_mode = auto
           EOF
-          out=$(build/dosemu "$workdir/txt.cfg" 2>/dev/null)
+          out=$(build/dosiz "$workdir/txt.cfg" 2>/dev/null)
           echo "out: $(printf '%q' "$out")"
           printf '%s' "$out" | grep -qU $'line1\r' || { echo "FAIL"; exit 1; }
 
       - name: "Smoke (env block at PSP:2Ch)"
         run: |
-          out=$(build/dosemu tests/ENVDUMP.COM 2>/dev/null)
-          echo "dosemu output: $out"
+          out=$(build/dosiz tests/ENVDUMP.COM 2>/dev/null)
+          echo "dosiz output: $out"
           echo "$out" | grep -q 'COMSPEC='
 
       - name: Smoke (unknown INT 21h AH soft-fails, program continues)
         run: |
-          out=$(build/dosemu tests/SURVIVE.COM 2>/dev/null)
-          echo "dosemu output: $out"
+          out=$(build/dosiz tests/SURVIVE.COM 2>/dev/null)
+          echo "dosiz output: $out"
           echo "$out" | grep -q 'survived-unimpl'
 
-      - name: Smoke (DOSEMU_PATH search, bare name + case-insensitive)
+      - name: Smoke (DOSIZ_PATH search, bare name + case-insensitive)
         run: |
-          out=$(DOSEMU_PATH=tests build/dosemu HELLO 2>/dev/null)
+          out=$(DOSIZ_PATH=tests build/dosiz HELLO 2>/dev/null)
           echo "bare HELLO: $out"
-          echo "$out" | grep -q 'dosemu-hello-ok'
-          out=$(DOSEMU_PATH=tests build/dosemu hello 2>/dev/null)
+          echo "$out" | grep -q 'dosiz-hello-ok'
+          out=$(DOSIZ_PATH=tests build/dosiz hello 2>/dev/null)
           echo "lowercase hello: $out"
-          echo "$out" | grep -q 'dosemu-hello-ok'
-          # Failure case: name not on path, dosemu exits non-zero.
-          if build/dosemu DOES_NOT_EXIST 2>/dev/null; then
+          echo "$out" | grep -q 'dosiz-hello-ok'
+          # Failure case: name not on path, dosiz exits non-zero.
+          if build/dosiz DOES_NOT_EXIST 2>/dev/null; then
             echo "FAIL: missing program should exit non-zero"; exit 1
           fi
 
@@ -661,7 +661,7 @@ jobs:
           args = small.bin
           drive_C = $workdir
           EOF
-          out=$(build/dosemu "$workdir/r.cfg" 2>/dev/null)
+          out=$(build/dosiz "$workdir/r.cfg" 2>/dev/null)
           echo "$out"
           echo "$out" | grep -qx 'size=13'
 
@@ -674,7 +674,7 @@ jobs:
           drive_C = $workdir
           default_mode = text
           EOF
-          DOSEMU_PATH=$workdir build/dosemu WRITE 2>/dev/null
+          DOSIZ_PATH=$workdir build/dosiz WRITE 2>/dev/null
           # Sidecar args=... must reach the program.
           grep -q 'from-sidecar' "$workdir/WROTE.TXT"
           # Sidecar default_mode=text must strip CR.
@@ -686,10 +686,10 @@ jobs:
         run: |
           workdir=$(mktemp -d)
           cd "$workdir"
-          "$GITHUB_WORKSPACE/build/dosemu" "$GITHUB_WORKSPACE/tests/WRITE.COM" ci-tail 2>/dev/null
+          "$GITHUB_WORKSPACE/build/dosiz" "$GITHUB_WORKSPACE/tests/WRITE.COM" ci-tail 2>/dev/null
           echo "file contents:"
           cat WROTE.TXT
-          grep -q 'dosemu-wrote-ok' WROTE.TXT
+          grep -q 'dosiz-wrote-ok' WROTE.TXT
           grep -q 'ci-tail' WROTE.TXT
 
       - name: DJGPP + DPMI + EMS/VCPI/HMA + shell + make integration suite

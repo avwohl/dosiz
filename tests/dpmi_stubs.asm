@@ -1,5 +1,5 @@
 ; dpmi_stubs.asm — round-trip tests for the "stub" DPMI services
-; clients probe during init but which dosemu implements as no-ops
+; clients probe during init but which dosiz implements as no-ops
 ; (no paging, no exception dispatch):
 ;
 ;   AX=0202/0203  Get/Set PM Exception Handler

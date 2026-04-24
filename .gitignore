@@ -12,8 +12,8 @@ build/
 **__pycache__*
 
 # Executables
-src/dosemu
-src/dosemu.exe
+src/dosiz
+src/dosiz.exe
 *.exe
 
 # Re-include committed DOS test fixtures (pre-built binaries under

@@ -1,6 +1,6 @@
 # DJGPP regression test suite
 
-End-to-end smoke tests that prove dosemu's ring-3 DPMI host is
+End-to-end smoke tests that prove dosiz's ring-3 DPMI host is
 correct enough to run DJGPP-compiled programs.
 
 ## What's here
@@ -25,7 +25,7 @@ them when a test source changes.
 ## Running locally
 
 ```
-make                    # build dosemu if not already
+make                    # build dosiz if not already
 ./tests/djgpp/run.sh
 ```
 

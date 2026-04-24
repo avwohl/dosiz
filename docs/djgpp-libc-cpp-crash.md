@@ -1,4 +1,4 @@
-# Why does `cpp.exe` crash under dosemu?
+# Why does `cpp.exe` crash under dosiz?
 
 A write-up of the failure mode, root cause, and what can be done about
 it.  Moved from inline WIP notes so the conclusions are easy to find
@@ -6,7 +6,7 @@ later.
 
 ## TL;DR
 
-**It's a DJGPP libc bug, not a dosemu bug.**  Any program linked
+**It's a DJGPP libc bug, not a dosiz bug.**  Any program linked
 against DJGPP libc 2.05 has a stack-buffer overflow in its startup
 code.  Whether the overflow is *visible* depends on the program's
 startup call chain.  `delorie/gcc*b.zip/bin/cpp.exe` happens to have
@@ -27,13 +27,13 @@ Running `delorie`'s `cpp.exe --version` with the standard 123-line
 `djgpp.env` from `djdev205.zip`:
 
 ```
-$ DJGPP='C:/DJGPP/DJGPP.ENV' ./dosemu CPP.EXE --version
+$ DJGPP='C:/DJGPP/DJGPP.ENV' ./dosiz CPP.EXE --version
 Exiting due to signal SIGILL
 Exiting due to signal SIGFPE
 Exiting due to signal SIGFPE
 Exiting due to signal SIGFPE
 Exiting due to signal SIGFPE
-dosemu: PM exception dispatcher in recursive-fault loop
+dosiz: PM exception dispatcher in recursive-fault loop
         (vec=16 cs:eip=0037:001e713d err=0x0) -- terminating
 ```
 
@@ -85,7 +85,7 @@ and traps #UD.  DJGPP's SIGILL handler is then re-entered in a
 state where our dispatcher sees it re-faulting at the same EIP and
 bails after the recursion counter trips.
 
-## Evidence this is not dosemu
+## Evidence this is not dosiz
 
 | What                                        | Runs with full djgpp.env? |
 |---------------------------------------------|---------------------------|
@@ -223,7 +223,7 @@ for the fix itself -- just a bread-crumb trail.
    immediately benefits everyone building DJGPP from that repo.
 3. Optionally (or if Andrew Wu declines for out-of-scope reasons)
    publish a `djgpp-libc-patches` fork on GitHub with this + any
-   other accumulated fixes, and link it from the dosemu README.
+   other accumulated fixes, and link it from the dosiz README.
 
 ## References
 
@@ -234,7 +234,7 @@ for the fix itself -- just a bread-crumb trail.
   index
 - [`../tests/djgpp/bigtest.cpp`](../tests/djgpp/bigtest.cpp) +
   [`../tests/BIGTEST.exe`](../tests/BIGTEST.exe) -- 2.3 MB DJGPP C++
-  regression gate that proves dosemu isn't the problem
+  regression gate that proves dosiz isn't the problem
 - `src/libc/crt0/c1loadef.c` in `djlsr205.zip` (download from
   <https://www.delorie.com/pub/djgpp/current/v2/djlsr205.zip>) --
   the buggy source

@@ -1,45 +1,45 @@
 /*
- * debug_settings.hpp -- env-var snapshot for dosemu.
+ * debug_settings.hpp -- env-var snapshot for dosiz.
  *
- * Constructor reads every DOSEMU_* env var once at static-init (before
+ * Constructor reads every DOSIZ_* env var once at static-init (before
  * main() runs).  Call sites access flags through `g_debug.<field>`
  * instead of repeatedly calling getenv().  Modeled on DebugSettings
  * from the iospharo VM.
  */
 #pragma once
 
-namespace dosemu {
+namespace dosiz {
 
 struct DebugSettings {
   DebugSettings();
   void reload();
 
   // Runtime behavior switches
-  bool dpmi_ring3;       // DOSEMU_DPMI_RING3 (opt-in, now default on)
-  bool dpmi_ring0;       // DOSEMU_DPMI_RING0 (opt-out for legacy ring-0 fixtures)
-  bool force_dpmi;       // DOSEMU_FORCE_DPMI
-  bool no_dpmi;          // DOSEMU_NO_DPMI
-  bool le_as_mz;         // DOSEMU_LE_AS_MZ
+  bool dpmi_ring3;       // DOSIZ_DPMI_RING3 (opt-in, now default on)
+  bool dpmi_ring0;       // DOSIZ_DPMI_RING0 (opt-out for legacy ring-0 fixtures)
+  bool force_dpmi;       // DOSIZ_FORCE_DPMI
+  bool no_dpmi;          // DOSIZ_NO_DPMI
+  bool le_as_mz;         // DOSIZ_LE_AS_MZ
 
   // Trace flags
-  bool trace;            // DOSEMU_TRACE
-  bool dpmi_trace;       // DOSEMU_DPMI_TRACE
-  bool exc_trace;        // DOSEMU_EXC_TRACE
-  bool ldt_trace;        // DOSEMU_LDT_TRACE
-  bool simrm_trace;      // DOSEMU_SIMRM_TRACE
-  bool stackwatch;       // DOSEMU_STACKWATCH
-  bool int4b_trace;      // DOSEMU_4B_TRACE
-  bool int4c_trace;      // DOSEMU_4C_TRACE
-  bool open_trace;       // DOSEMU_OPEN_TRACE
-  bool write_trace;      // DOSEMU_WRITE_TRACE
-  bool cpu_trace;        // DOSEMU_CPU_TRACE  (read here to pick core=normal;
+  bool trace;            // DOSIZ_TRACE
+  bool dpmi_trace;       // DOSIZ_DPMI_TRACE
+  bool exc_trace;        // DOSIZ_EXC_TRACE
+  bool ldt_trace;        // DOSIZ_LDT_TRACE
+  bool simrm_trace;      // DOSIZ_SIMRM_TRACE
+  bool stackwatch;       // DOSIZ_STACKWATCH
+  bool int4b_trace;      // DOSIZ_4B_TRACE
+  bool int4c_trace;      // DOSIZ_4C_TRACE
+  bool open_trace;       // DOSIZ_OPEN_TRACE
+  bool write_trace;      // DOSIZ_WRITE_TRACE
+  bool cpu_trace;        // DOSIZ_CPU_TRACE  (read here to pick core=normal;
                          // the actual per-instruction trace lives in the
                          // submodule and reads getenv() directly.)
 
   // Strings (nullptr if unset or empty).
-  const char* path;      // DOSEMU_PATH
+  const char* path;      // DOSIZ_PATH
 };
 
 extern DebugSettings g_debug;
 
-}  // namespace dosemu
+}  // namespace dosiz

@@ -3,15 +3,15 @@
 ## `sdlmain-expose-setup.patch`
 
 Applied to the dosbox-staging submodule at build time by the top-level
-Makefile.  Required so dosemu can link against libdosbox.a and call the
+Makefile.  Required so dosiz can link against libdosbox.a and call the
 entry points that upstream marks `static`.
 
 ## `djgpp-libc-c1loadef-stack-smash.patch`
 
-Not applied anywhere -- we don't rebuild DJGPP libc as part of the dosemu
+Not applied anywhere -- we don't rebuild DJGPP libc as part of the dosiz
 build.  This is a drafted fix for a genuine stack-buffer overflow in
 `src/libc/crt0/c1loadef.c` of DJGPP libc 2.05 (djlsr205.zip), discovered
-while chasing why gcc 12.2 `cpp.exe --version` crashes under dosemu with
+while chasing why gcc 12.2 `cpp.exe --version` crashes under dosiz with
 a recursive #MF fault when the standard delorie `djgpp.env` is in place.
 
 Root cause: `__crt0_load_environment_file` sizes its stack buffer to the
@@ -51,7 +51,7 @@ The script caches `/tmp/djlsr205.zip` across runs.
 
 See `../WIP.md` (section "The delorie cpp.exe SIGFPE") for the full
 investigation log, including the exact 2683-byte trigger threshold,
-evidence ruling out dosemu (our own 2.3 MB DJGPP-built C++ binary
+evidence ruling out dosiz (our own 2.3 MB DJGPP-built C++ binary
 `tests/BIGTEST.EXE` runs the full djgpp.env clean), and byte-level
 disassembly of the failure point.
 

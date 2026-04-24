@@ -22,7 +22,7 @@ mz = bytearray(MZ_SIZE)
 mz[0:2] = b"MZ"
 # We don't run the MZ stub, but set a plausible page/reloc count so
 # generic MZ readers don't choke.  lfanew (offset 0x3C) is the only
-# field dosemu actually uses here.
+# field dosiz actually uses here.
 struct.pack_into("<H", mz, 0x02, 0)       # bytes-in-last-page = 0 -> exactly pages*512
 struct.pack_into("<H", mz, 0x04, 1)       # pages (512-byte) = 1
 struct.pack_into("<H", mz, 0x06, 0)       # reloc count

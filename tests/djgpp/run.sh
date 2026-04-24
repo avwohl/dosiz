@@ -20,14 +20,14 @@
 set -eu
 cd "$(dirname "$0")/../.."
 
-if [[ ! -x build/dosemu ]]; then
-    echo "error: build/dosemu not found; run 'make' first" >&2
+if [[ ! -x build/dosiz ]]; then
+    echo "error: build/dosiz not found; run 'make' first" >&2
     exit 1
 fi
 
 rm -f djfile.tmp
 
-# Note: ring-3 DPMI is now the default.  `DOSEMU_DPMI_RING0=1` is
+# Note: ring-3 DPMI is now the default.  `DOSIZ_DPMI_RING0=1` is
 # available as an opt-out for the in-tree ring-0 DPMI fixtures.
 
 pass=0
@@ -46,9 +46,9 @@ run_one() {
     fi
     local out rc
     if [[ -n "$input" ]]; then
-        out=$(printf '%s' "$input" | ./build/dosemu "$exe" "$@" 2>/dev/null) && rc=$? || rc=$?
+        out=$(printf '%s' "$input" | ./build/dosiz "$exe" "$@" 2>/dev/null) && rc=$? || rc=$?
     else
-        out=$(./build/dosemu "$exe" "$@" 2>/dev/null) && rc=$? || rc=$?
+        out=$(./build/dosiz "$exe" "$@" 2>/dev/null) && rc=$? || rc=$?
     fi
     local got_marker=$(echo "$out" | tr -d '\r' | grep -F "$marker" || true)
     if [[ "$rc" == "$expect_rc" && -n "$got_marker" ]]; then
@@ -86,7 +86,7 @@ run_one BIGTEST   "bigtest-done" 0 ""
 # via AH=4B of FreeCOM, FreeCOM's parsing of /c argument, FreeCOM
 # running a built-in and exiting cleanly back to make.
 mdir=$(mktemp -d)
-cp build/dosemu tests/MAKE.EXE tests/COMMAND.COM "$mdir/"
+cp build/dosiz tests/MAKE.EXE tests/COMMAND.COM "$mdir/"
 mkdir "$mdir/TMP"
 cat > "$mdir/Makefile" <<'MAKEEOF'
 all: out.txt
@@ -94,7 +94,7 @@ out.txt:
 	@echo make-hello > out.txt
 	@echo built
 MAKEEOF
-(cd "$mdir" && TMPDIR=C:\\TMP timeout 20 ./dosemu MAKE.EXE 2>/dev/null) > "$mdir/out"
+(cd "$mdir" && TMPDIR=C:\\TMP timeout 20 ./dosiz MAKE.EXE 2>/dev/null) > "$mdir/out"
 mout=$(tr -d '\r' < "$mdir/out")
 mfile=$(tr -d '\r' < "$mdir/out.txt" 2>/dev/null)
 rm -rf "$mdir"
@@ -113,7 +113,7 @@ fi
 # the content-sniffed .COM/.EXE loader and the NLS fix.  We run from
 # the repo root (not a tmpdir) so FreeCOM can self-locate via
 # %COMSPEC%=C:\TESTS\COMMAND.COM for its strings resource.
-fcout=$(printf 'echo fc-hello\r\nexit\r\n' | timeout 10 ./build/dosemu tests/COMMAND.COM 2>/dev/null | tr -d '\r')
+fcout=$(printf 'echo fc-hello\r\nexit\r\n' | timeout 10 ./build/dosiz tests/COMMAND.COM 2>/dev/null | tr -d '\r')
 if echo "$fcout" | grep -q '^fc-hello$'; then
     printf "  %-12s PASS\n" "FREECOM"
     pass=$((pass + 1))
@@ -140,11 +140,11 @@ fi
 # directly for the DJ_WRITE.exe command).
 fcs_dir=$(mktemp -d)
 mkdir -p "$fcs_dir/TESTS"
-cp build/dosemu tests/COMMAND.COM tests/HELLO.COM tests/DJ_WRITE.exe \
+cp build/dosiz tests/COMMAND.COM tests/HELLO.COM tests/DJ_WRITE.exe \
    tests/SEQ.EXE tests/DJ_DJE.exe "$fcs_dir/"
 cp tests/DJ_WRITE.exe "$fcs_dir/TESTS/"
 fcsout=$(printf 'HELLO.COM\r\nDJ_WRITE.exe\r\nSEQ.EXE 1 3\r\nDJ_DJE.exe\r\necho post-spawn-ok\r\nexit\r\n' \
-    | (cd "$fcs_dir" && timeout 15 ./dosemu COMMAND.COM 2>/dev/null) | tr -d '\r')
+    | (cd "$fcs_dir" && timeout 15 ./dosiz COMMAND.COM 2>/dev/null) | tr -d '\r')
 rm -rf "$fcs_dir"
 # FC_SPAWN now asserts:
 #   RM child (HELLO.COM)
@@ -153,7 +153,7 @@ rm -rf "$fcs_dir"
 #   3-level nested chain FreeCOM -> DJ_DJE -> DJ_WRITE
 #   post-spawn builtin still works
 if echo "$fcsout" | grep -q 'post-spawn-ok' \
-    && echo "$fcsout" | grep -q 'dosemu-hello-ok' \
+    && echo "$fcsout" | grep -q 'dosiz-hello-ok' \
     && echo "$fcsout" | grep -q 'dj-write=ok' \
     && echo "$fcsout" | grep -q 'dj-dj-exec=ok' \
     && echo "$fcsout" | grep -Eq '^1$' \
@@ -168,7 +168,7 @@ fi
 # Extra assertion: DJ_ARGV called with a quoted multi-word arg must
 # deliver it as a single argv entry (regression gate for the PSP
 # cmd-tail quoting fix).
-qout=$(./build/dosemu tests/DJ_ARGV.exe "a b c" simple 2>/dev/null | tr -d '\r')
+qout=$(./build/dosiz tests/DJ_ARGV.exe "a b c" simple 2>/dev/null | tr -d '\r')
 if echo "$qout" | grep -q "^\[1\]=a b c$" && echo "$qout" | grep -q "^argc=3$"; then
     printf "  %-12s PASS\n" "DJ_QUOTED"
     pass=$((pass + 1))
@@ -183,8 +183,8 @@ fi
 # delorie.com archive, built 2005).  Rendering "HI" should produce
 # ASCII art containing 7 rows of '#' characters.  This is a "no
 # regression on external tools" gate -- if an aggressive change
-# to dosemu's DPMI host breaks a real program, this catches it.
-bout=$(./build/dosemu tests/BANNER.EXE HI 2>/dev/null | tr -d '\r')
+# to dosiz's DPMI host breaks a real program, this catches it.
+bout=$(./build/dosiz tests/BANNER.EXE HI 2>/dev/null | tr -d '\r')
 if echo "$bout" | grep -q '#######' && [[ $(echo "$bout" | grep -c '#') -ge 7 ]]; then
     printf "  %-12s PASS\n" "BANNER"
     pass=$((pass + 1))
@@ -199,16 +199,16 @@ fi
 # 4-line fixture and verify it matches the lines we expect, then
 # verify the no-match case returns rc=1 (grep convention).
 #
-# Both dosemu and grep.exe are copied into a tmpdir so cwd-based
+# Both dosiz and grep.exe are copied into a tmpdir so cwd-based
 # drive mount lands there and grep's self-open via argv[0] finds
 # grep.exe as C:\GREP.EXE.
 gdir=$(mktemp -d)
-cp build/dosemu "$gdir/"
+cp build/dosiz "$gdir/"
 cp tests/GREP.EXE "$gdir/"
 printf "alpha\nbeta\nalphabet\ngamma\n" > "$gdir/input.txt"
-(cd "$gdir" && ./dosemu GREP.EXE alpha input.txt 2>/dev/null) > "$gdir/out" && rc=$? || rc=$?
+(cd "$gdir" && ./dosiz GREP.EXE alpha input.txt 2>/dev/null) > "$gdir/out" && rc=$? || rc=$?
 got=$(tr -d '\r' < "$gdir/out")
-(cd "$gdir" && ./dosemu GREP.EXE nomatch input.txt 2>/dev/null) > /dev/null && rc2=$? || rc2=$?
+(cd "$gdir" && ./dosiz GREP.EXE nomatch input.txt 2>/dev/null) > /dev/null && rc2=$? || rc2=$?
 rm -rf "$gdir"
 if [[ "$rc" == "0" && "$got" == *"alpha"$'\n'"alphabet"* && "$rc2" == "1" ]]; then
     printf "  %-12s PASS\n" "GREP"
@@ -226,11 +226,11 @@ fi
 # seek fails with EINVAL and diff bails.  Fixture: two 3-line files
 # differing on line 2; expected output is "2c2" diff format.
 ddir=$(mktemp -d)
-cp build/dosemu "$ddir/"
+cp build/dosiz "$ddir/"
 cp tests/DIFF.EXE "$ddir/"
 printf "line1\nline2\nline3\n" > "$ddir/a.txt"
 printf "line1\nCHANGED\nline3\n" > "$ddir/b.txt"
-(cd "$ddir" && ./dosemu DIFF.EXE a.txt b.txt 2>/dev/null) > "$ddir/out" && drc=$? || drc=$?
+(cd "$ddir" && ./dosiz DIFF.EXE a.txt b.txt 2>/dev/null) > "$ddir/out" && drc=$? || drc=$?
 dgot=$(tr -d '\r' < "$ddir/out")
 rm -rf "$ddir"
 if [[ "$drc" == "1" && "$dgot" == *"2c2"* && "$dgot" == *"< line2"* && "$dgot" == *"> CHANGED"* ]]; then
@@ -246,9 +246,9 @@ fi
 # handling std-handle lseek gracefully (return pos=0 on ESPIPE
 # rather than EBADF).  Regression gate for that.
 cdir=$(mktemp -d)
-cp build/dosemu tests/CAT.EXE "$cdir/"
+cp build/dosiz tests/CAT.EXE "$cdir/"
 printf "banana\napple\ncherry\n" > "$cdir/in.txt"
-(cd "$cdir" && ./dosemu CAT.EXE in.txt 2>/dev/null) > "$cdir/out" && crc=$? || crc=$?
+(cd "$cdir" && ./dosiz CAT.EXE in.txt 2>/dev/null) > "$cdir/out" && crc=$? || crc=$?
 cgot=$(tr -d '\r' < "$cdir/out")
 rm -rf "$cdir"
 if [[ "$crc" == "0" && "$cgot" == "banana"$'\n'"apple"$'\n'"cherry" ]]; then
@@ -262,9 +262,9 @@ fi
 # GNU sed 4.8 (sed48b).  's/X/Y/' substitution -- exercises the
 # same std-handle + disk-read paths as cat but with regex work.
 sdir=$(mktemp -d)
-cp build/dosemu tests/SED.EXE "$sdir/"
+cp build/dosiz tests/SED.EXE "$sdir/"
 printf "hello world\nfoo bar\nhello again\n" > "$sdir/in.txt"
-(cd "$sdir" && ./dosemu SED.EXE 's/hello/HOWDY/' in.txt 2>/dev/null) > "$sdir/out" && src=$? || src=$?
+(cd "$sdir" && ./dosiz SED.EXE 's/hello/HOWDY/' in.txt 2>/dev/null) > "$sdir/out" && src=$? || src=$?
 sgot=$(tr -d '\r' < "$sdir/out")
 rm -rf "$sdir"
 if [[ "$src" == "0" && "$sgot" == *"HOWDY world"* && "$sgot" == *"HOWDY again"* ]]; then
@@ -278,9 +278,9 @@ fi
 # GNU sort (coreutils / txt20b).  Alphabetic sort -- verifies
 # buffered I/O + qsort work end-to-end.
 odir=$(mktemp -d)
-cp build/dosemu tests/SORT.EXE "$odir/"
+cp build/dosiz tests/SORT.EXE "$odir/"
 printf "banana\napple\ncherry\nbanana\n" > "$odir/in.txt"
-(cd "$odir" && ./dosemu SORT.EXE in.txt 2>/dev/null) > "$odir/out" && orc=$? || orc=$?
+(cd "$odir" && ./dosiz SORT.EXE in.txt 2>/dev/null) > "$odir/out" && orc=$? || orc=$?
 ogot=$(tr -d '\r' < "$odir/out")
 rm -rf "$odir"
 if [[ "$orc" == "0" && "$ogot" == "apple"$'\n'"banana"$'\n'"banana"$'\n'"cherry" ]]; then
@@ -293,9 +293,9 @@ fi
 
 # GNU wc (coreutils / txt20b).  `wc -l input.txt` on a 4-line file.
 wdir=$(mktemp -d)
-cp build/dosemu tests/WC.EXE "$wdir/"
+cp build/dosiz tests/WC.EXE "$wdir/"
 printf "one\ntwo\nthree\nfour\n" > "$wdir/in.txt"
-(cd "$wdir" && ./dosemu WC.EXE -l in.txt 2>/dev/null) > "$wdir/out" && wrc=$? || wrc=$?
+(cd "$wdir" && ./dosiz WC.EXE -l in.txt 2>/dev/null) > "$wdir/out" && wrc=$? || wrc=$?
 wgot=$(tr -d '\r' < "$wdir/out" | tr -s ' ')
 rm -rf "$wdir"
 # wc output: "       4 in.txt" (leading whitespace compressed by tr -s)
@@ -310,9 +310,9 @@ fi
 # GNU gawk 5.0 (gwk500b).  Prints column 2 of a whitespace-
 # separated input -- exercises the regex engine + field split.
 adir=$(mktemp -d)
-cp build/dosemu tests/GAWK.EXE "$adir/"
+cp build/dosiz tests/GAWK.EXE "$adir/"
 printf "1 2 3\n4 5 6\n" > "$adir/in.txt"
-(cd "$adir" && ./dosemu GAWK.EXE '{print $2}' in.txt 2>/dev/null) > "$adir/out" && arc=$? || arc=$?
+(cd "$adir" && ./dosiz GAWK.EXE '{print $2}' in.txt 2>/dev/null) > "$adir/out" && arc=$? || arc=$?
 agot=$(tr -d '\r' < "$adir/out")
 rm -rf "$adir"
 if [[ "$arc" == "0" && "$agot" == "2"$'\n'"5" ]]; then
@@ -329,13 +329,13 @@ fi
 # the AH=3F/AH=40 paths without spurious CR/LF insertion.  Also
 # verify host gunzip (if available) can decompress our gzip's
 # output -- catches TZ/format-compat bugs that would round-trip
-# within dosemu but produce non-standard files.
+# within dosiz but produce non-standard files.
 zdir=$(mktemp -d)
-cp build/dosemu tests/GZIP.EXE "$zdir/"
+cp build/dosiz tests/GZIP.EXE "$zdir/"
 printf "alpha beta gamma delta epsilon alpha beta gamma delta epsilon\n" > "$zdir/in.txt"
 orig=$(tr -d '\r' < "$zdir/in.txt")
-(cd "$zdir" && ./dosemu GZIP.EXE -c in.txt 2>/dev/null) > "$zdir/in.gz" && zrc=$? || zrc=$?
-(cd "$zdir" && ./dosemu GZIP.EXE -dc in.gz 2>/dev/null) > "$zdir/out" && zrc2=$? || zrc2=$?
+(cd "$zdir" && ./dosiz GZIP.EXE -c in.txt 2>/dev/null) > "$zdir/in.gz" && zrc=$? || zrc=$?
+(cd "$zdir" && ./dosiz GZIP.EXE -dc in.gz 2>/dev/null) > "$zdir/out" && zrc2=$? || zrc2=$?
 roundtrip=$(tr -d '\r' < "$zdir/out")
 host_unzip_ok=1
 if command -v gunzip >/dev/null; then
@@ -357,14 +357,14 @@ fi
 # attribute-byte for directory detection.  Regression gate for the
 # token-based find-state + DOS-semantic glob fixes.
 ldir=$(mktemp -d)
-cp build/dosemu tests/LS.EXE "$ldir/"
+cp build/dosiz tests/LS.EXE "$ldir/"
 echo "content-a" > "$ldir/a.txt"
 echo "content-b" > "$ldir/b.txt"
 mkdir "$ldir/subdir"
-(cd "$ldir" && ./dosemu LS.EXE 2>/dev/null) > "$ldir/out" && lrc=$? || lrc=$?
+(cd "$ldir" && ./dosiz LS.EXE 2>/dev/null) > "$ldir/out" && lrc=$? || lrc=$?
 lgot=$(tr -d '\r' < "$ldir/out")
 rm -rf "$ldir"
-# ls should list a.txt, b.txt, subdir, dosemu, ls.exe (case may vary).
+# ls should list a.txt, b.txt, subdir, dosiz, ls.exe (case may vary).
 if [[ "$lrc" == "0" \
     && "$lgot" == *"a.txt"* \
     && "$lgot" == *"b.txt"* \
@@ -381,9 +381,9 @@ fi
 # on an exact filename (no-wildcard pattern), which is the usual
 # POSIX stat() path on DOS.
 fdir=$(mktemp -d)
-cp build/dosemu tests/FIND.EXE "$fdir/"
+cp build/dosiz tests/FIND.EXE "$fdir/"
 echo hi > "$fdir/target.txt"
-(cd "$fdir" && ./dosemu FIND.EXE target.txt 2>/dev/null) > "$fdir/out" && frc=$? || frc=$?
+(cd "$fdir" && ./dosiz FIND.EXE target.txt 2>/dev/null) > "$fdir/out" && frc=$? || frc=$?
 fgot=$(tr -d '\r' < "$fdir/out")
 rm -rf "$fdir"
 if [[ "$frc" == "0" && "$fgot" == *"target.txt"* ]]; then
@@ -397,10 +397,10 @@ fi
 # GNU patch (pat275b).  Applies a unified diff -- pairs with DIFF
 # to exercise the same text-file read/write path in both directions.
 pdir=$(mktemp -d)
-cp build/dosemu tests/PATCH.EXE "$pdir/"
+cp build/dosiz tests/PATCH.EXE "$pdir/"
 printf "hello\nworld\n" > "$pdir/a.txt"
 printf "2c2\n< world\n---\n> WORLD\n" > "$pdir/p.diff"
-(cd "$pdir" && ./dosemu PATCH.EXE a.txt p.diff 2>/dev/null) >/dev/null && prc=$? || prc=$?
+(cd "$pdir" && ./dosiz PATCH.EXE a.txt p.diff 2>/dev/null) >/dev/null && prc=$? || prc=$?
 pfinal=$(tr -d '\r' < "$pdir/a.txt")
 rm -rf "$pdir"
 if [[ "$prc" == "0" && "$pfinal" == "hello"$'\n'"WORLD" ]]; then
@@ -415,13 +415,13 @@ fi
 # files, extract into a fresh dir, verify content matches.  Tests
 # multi-file I/O and the archive format on AH=3F/40.
 tdir=$(mktemp -d)
-cp build/dosemu tests/TAR.EXE "$tdir/"
+cp build/dosiz tests/TAR.EXE "$tdir/"
 echo "file1-content" > "$tdir/a.txt"
 echo "file2-content" > "$tdir/b.txt"
-(cd "$tdir" && ./dosemu TAR.EXE cf out.tar a.txt b.txt 2>/dev/null) >/dev/null && trc1=$? || trc1=$?
+(cd "$tdir" && ./dosiz TAR.EXE cf out.tar a.txt b.txt 2>/dev/null) >/dev/null && trc1=$? || trc1=$?
 mkdir "$tdir/ex"
-cp build/dosemu tests/TAR.EXE "$tdir/out.tar" "$tdir/ex/"
-(cd "$tdir/ex" && ./dosemu TAR.EXE xf out.tar 2>/dev/null) >/dev/null && trc2=$? || trc2=$?
+cp build/dosiz tests/TAR.EXE "$tdir/out.tar" "$tdir/ex/"
+(cd "$tdir/ex" && ./dosiz TAR.EXE xf out.tar 2>/dev/null) >/dev/null && trc2=$? || trc2=$?
 tgot1=$(tr -d '\r' < "$tdir/ex/a.txt" 2>/dev/null)
 tgot2=$(tr -d '\r' < "$tdir/ex/b.txt" 2>/dev/null)
 rm -rf "$tdir"
@@ -439,8 +439,8 @@ fi
 # style piped stdin reads to a program that does its own line
 # parsing, not just stdio buffered reads.
 bcdir=$(mktemp -d)
-cp build/dosemu tests/BC.EXE "$bcdir/"
-bcout=$(printf "2+2\n7*6\nquit\n" | (cd "$bcdir" && ./dosemu BC.EXE 2>/dev/null))
+cp build/dosiz tests/BC.EXE "$bcdir/"
+bcout=$(printf "2+2\n7*6\nquit\n" | (cd "$bcdir" && ./dosiz BC.EXE 2>/dev/null))
 bcrc=$?
 rm -rf "$bcdir"
 bcout=$(echo "$bcout" | tr -d '\r')
@@ -456,9 +456,9 @@ fi
 # define.  Different dispatch from sed (which uses regex); m4 does
 # parser-level text substitution with its own symbol table.
 mdir=$(mktemp -d)
-cp build/dosemu tests/M4.EXE "$mdir/"
+cp build/dosiz tests/M4.EXE "$mdir/"
 printf "define(\`GREET', \`Hi, \$1!')GREET(\`world')\n" > "$mdir/in.m4"
-(cd "$mdir" && ./dosemu M4.EXE in.m4 2>/dev/null) > "$mdir/out" && mrc=$? || mrc=$?
+(cd "$mdir" && ./dosiz M4.EXE in.m4 2>/dev/null) > "$mdir/out" && mrc=$? || mrc=$?
 mgot=$(tr -d '\r' < "$mdir/out")
 rm -rf "$mdir"
 if [[ "$mrc" == "0" && "$mgot" == "Hi, world!" ]]; then
@@ -474,9 +474,9 @@ fi
 # file onto stdout before writing the generated C.  Regression gate
 # for the dup/dup2 fix.
 xdir=$(mktemp -d)
-cp build/dosemu tests/FLEX.EXE "$xdir/"
+cp build/dosiz tests/FLEX.EXE "$xdir/"
 printf '%%%%\n[a-z]+ printf("word: %%s\\n", yytext);\n' > "$xdir/in.l"
-(cd "$xdir" && ./dosemu FLEX.EXE in.l 2>/dev/null) >/dev/null && xrc=$? || xrc=$?
+(cd "$xdir" && ./dosiz FLEX.EXE in.l 2>/dev/null) >/dev/null && xrc=$? || xrc=$?
 xlines=$(wc -l < "$xdir/lexyy.c" 2>/dev/null || echo 0)
 xhas_yylex=$(grep -c yylex "$xdir/lexyy.c" 2>/dev/null || echo 0)
 rm -rf "$xdir"
@@ -491,7 +491,7 @@ fi
 
 # GNU seq (shellutils).  Generates integer sequence to stdout --
 # tests argv-as-numbers + AH=40 stdout writes.
-seqout=$(./build/dosemu tests/SEQ.EXE 1 5 2>/dev/null | tr -d '\r' | tr '\n' ',')
+seqout=$(./build/dosiz tests/SEQ.EXE 1 5 2>/dev/null | tr -d '\r' | tr '\n' ',')
 if [[ "$seqout" == "1,2,3,4,5," ]]; then
     printf "  %-12s PASS\n" "SEQ"
     pass=$((pass + 1))
@@ -502,7 +502,7 @@ fi
 
 # GNU factor (shellutils).  Prime factorization of 42 = 2*3*7.
 # Exercises argv parsing, simple arithmetic, and formatted output.
-fout=$(./build/dosemu tests/FACTOR.EXE 42 2>/dev/null | tr -d '\r')
+fout=$(./build/dosiz tests/FACTOR.EXE 42 2>/dev/null | tr -d '\r')
 if [[ "$fout" == "42: 2 3 7" ]]; then
     printf "  %-12s PASS\n" "FACTOR"
     pass=$((pass + 1))
@@ -512,7 +512,7 @@ else
 fi
 
 # GNU basename (shellutils).  Strips directory from a DOS path.
-bnout=$(./build/dosemu tests/BASENAME.EXE "C:\\TESTS\\DJ_WRITE.EXE" 2>/dev/null | tr -d '\r')
+bnout=$(./build/dosiz tests/BASENAME.EXE "C:\\TESTS\\DJ_WRITE.EXE" 2>/dev/null | tr -d '\r')
 if [[ "$bnout" == "DJ_WRITE.EXE" ]]; then
     printf "  %-12s PASS\n" "BASENAME"
     pass=$((pass + 1))
@@ -533,7 +533,7 @@ if [[ -f ~/ow/binw/wcc386.exe && -f ~/ow/binw/wlink.exe \
     fi
     watdir=$(mktemp -d)
     cp -R ~/ow/binw ~/ow/h ~/ow/lib386 ~/ow/lib286 "$watdir/" 2>/dev/null
-    cp build/dosemu "$watdir/"
+    cp build/dosiz "$watdir/"
     cat > "$watdir/hello.c" <<'HELLOCEOF'
 #include <stdio.h>
 int main(void) { printf("wat-compile-link-run-ok\n"); return 0; }
@@ -546,11 +546,11 @@ file hello
 name hello.exe
 LINK32EOF
     watout=$(cd "$watdir" && \
-        WATCOM='C:\' INCLUDE='C:\H' DOSEMU_PATH='C:\BINW' \
-        ./dosemu binw/wcc386.exe hello.c 2>/dev/null && \
-        WATCOM='C:\' DOSEMU_PATH='C:\BINW' \
-        ./dosemu binw/wlink.exe @link32.cmd 2>/dev/null && \
-        DOSEMU_PATH='C:\BINW' ./dosemu hello.exe 2>/dev/null | tr -d '\r')
+        WATCOM='C:\' INCLUDE='C:\H' DOSIZ_PATH='C:\BINW' \
+        ./dosiz binw/wcc386.exe hello.c 2>/dev/null && \
+        WATCOM='C:\' DOSIZ_PATH='C:\BINW' \
+        ./dosiz binw/wlink.exe @link32.cmd 2>/dev/null && \
+        DOSIZ_PATH='C:\BINW' ./dosiz hello.exe 2>/dev/null | tr -d '\r')
     if echo "$watout" | grep -q 'wat-compile-link-run-ok'; then
         printf "  %-12s PASS\n" "WATCOM32"
         pass=$((pass + 1))
@@ -568,11 +568,11 @@ file hello
 name hello.exe
 LINK16EOF
         wat16out=$(cd "$watdir" && \
-            WATCOM='C:\' INCLUDE='C:\H' DOSEMU_PATH='C:\BINW' \
-            ./dosemu binw/wcc.exe -ml hello.c 2>/dev/null && \
-            WATCOM='C:\' DOSEMU_PATH='C:\BINW' \
-            ./dosemu binw/wlink.exe @link16.cmd 2>/dev/null && \
-            ./dosemu hello.exe 2>/dev/null | tr -d '\r')
+            WATCOM='C:\' INCLUDE='C:\H' DOSIZ_PATH='C:\BINW' \
+            ./dosiz binw/wcc.exe -ml hello.c 2>/dev/null && \
+            WATCOM='C:\' DOSIZ_PATH='C:\BINW' \
+            ./dosiz binw/wlink.exe @link16.cmd 2>/dev/null && \
+            ./dosiz hello.exe 2>/dev/null | tr -d '\r')
         if echo "$wat16out" | grep -q 'wat-compile-link-run-ok'; then
             printf "  %-12s PASS\n" "WATCOM16"
             pass=$((pass + 1))

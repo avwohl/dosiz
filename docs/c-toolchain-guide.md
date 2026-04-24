@@ -1,12 +1,12 @@
-# C toolchains under dosemu -- field guide
+# C toolchains under dosiz -- field guide
 
-Accumulated lessons from running real DOS C toolchains through dosemu.
+Accumulated lessons from running real DOS C toolchains through dosiz.
 Target audience: us, later, specifically for a MicroPython port but
 applicable to any project compiling C to DOS targets under this
 emulator.  Things we spent hours rediscovering the first time so we
 don't do it again.
 
-Scope: the three realistic paths to a working C binary under dosemu.
+Scope: the three realistic paths to a working C binary under dosiz.
 
     Toolchain        Target                C dialect  Status
     ---------        ------                ---------  ------
@@ -15,7 +15,7 @@ Scope: the three realistic paths to a working C binary under dosemu.
     Open Watcom      16-bit DOS MZ         C89        works (needs lib286)
 
 No other toolchains investigated seriously.  Turbo C, MSC 6, Borland
-C++, Zortech etc. all predate dosemu's DPMI/LE emulation arc and were
+C++, Zortech etc. all predate dosiz's DPMI/LE emulation arc and were
 not tried.
 
 
@@ -50,7 +50,7 @@ not tried.
 DJGPP produces 32-bit DPMI-client binaries.  The go32-v2 stub (MZ
 wrapper) sits in front of a COFF payload; when DOS runs the binary,
 go32-v2 probes for a DPMI host, switches to PM, and jumps to the
-COFF main.  Dosemu's ring-3 DPMI host handles this natively since
+COFF main.  Dosiz's ring-3 DPMI host handles this natively since
 commit `2bafe81`.
 
 ### Getting DJGPP
@@ -70,8 +70,8 @@ commit `2bafe81`.
     DJGPP=C:\DJGPP\DJGPP.ENV    required by DJGPP's _init code
     PATH=...;C:\DJGPP\BIN       for gcc's internal spawns
 
-dosemu inherits the host-side `DJGPP` env var (passed through by
-`build_env_block()` in src/bridge.cc).  Set `DOSEMU_PATH='C:\DJGPP\BIN'`
+dosiz inherits the host-side `DJGPP` env var (passed through by
+`build_env_block()` in src/bridge.cc).  Set `DOSIZ_PATH='C:\DJGPP\BIN'`
 to extend the DOS PATH beyond the hardcoded `C:\`.
 
 ### The cpp.exe stack smash
@@ -108,14 +108,14 @@ offset the overrun reaches.  But `cpp.exe` specifically does.
   `dos_path.empty()` branch.
 - 2015-era (libc 2.05) DJGPP programs expect `AH=65 AL=02/04/06/07`
   to return the 5-byte `[id + far ptr]` format, not the 41-byte
-  general-info struct.  dosemu gets this right now (commit
+  general-info struct.  dosiz gets this right now (commit
   `4062658`), but if you add more 2000-era DJGPP tools and they
   crash with "recursive-fault loop vec=6 cs:eip=0037:<bogus>", it's
   this class of bug.
 - 2000-era DJGPP's `setlocale` pokes `AH=63` looking for a
   properly-terminated DBCS lead-byte table.  DS:SI=0:0 (pointing at
   the IVT) makes it interpret interrupt vectors as DBCS ranges and
-  misbehave.  dosemu installs a `[0,0,0,0]` terminator at linear
+  misbehave.  dosiz installs a `[0,0,0,0]` terminator at linear
   `0x0900` (commit `44c9e19`).
 
 ### DJGPP under FreeCOM (interactive shell)
@@ -125,11 +125,11 @@ interacts with DJGPP children through an additional layer:
 
 - FreeCOM's init reads its own MCB at `_psp-1` to derive
   `SwapTransientSize` (how many paras to request back after each
-  child exec).  dosemu writes a valid MCB header at PSP_SEG-1 so
+  child exec).  dosiz writes a valid MCB header at PSP_SEG-1 so
   `mcb_size` reads a real value (commit `bcfcaeb`).  Without this,
   FreeCOM's REPL hangs silently after any external spawn.
 - When a DJGPP (PM) child exits back to FreeCOM (RM), `cpu.code.big`
-  and `cpu.idt` are still set to DJGPP's values.  dosemu snapshots
+  and `cpu.idt` are still set to DJGPP's values.  dosiz snapshots
   both at AH=4B entry and restores on exit (commit `493d1c6`).
   Without this, the callback-trampoline IRET decodes as 32-bit IRETD
   and pops garbage CS:EIP.
@@ -139,19 +139,19 @@ interacts with DJGPP children through an additional layer:
 
 OW produces either 32-bit DOS/4G-bound LE binaries (via wcc386 +
 wlink + dos4gw/wstub) or plain 16-bit DOS MZ binaries (via wcc +
-wlink).  Both work through dosemu as of this session.
+wlink).  Both work through dosiz as of this session.
 
 ### Getting Open Watcom
 
 Only the Windows-x86 installer is useful -- the Linux and macOS ones
 are host-platform ELF/Mach-O runnable binaries of the tools, not what
 we want.  We want the DOS binaries (`binw/wcc386.exe` etc.) to run
-*under dosemu*.
+*under dosiz*.
 
     curl -LO https://github.com/open-watcom/open-watcom-v2/releases/download/Current-build/open-watcom-2_0-c-win-x86.exe
     7z x -y open-watcom-2_0-c-win-x86.exe 'binw/*' 'h/*' 'lib386/*' 'lib286/*'
 
-Put the extracted tree at `~/ow` (what dosemu's tests assume).  Total
+Put the extracted tree at `~/ow` (what dosiz's tests assume).  Total
 ~15 MB after extraction.
 
 ### The wlink.lnk gotcha
@@ -162,7 +162,7 @@ that dos4gw.exe rejects with:
 
     DOS/4GW fatal error (1012): FOO.EXE is not a WATCOM program
 
-This is a distribution bug in OW v2, not a dosemu issue -- confirmed
+This is a distribution bug in OW v2, not a dosiz issue -- confirmed
 by running OW's own `owcc` driver native on Windows against the same
 release.
 
@@ -175,10 +175,10 @@ walkthrough.
 
     WATCOM=C:\                  install root, mapped to DOS drive
     INCLUDE=C:\H                header search path (wcc386 looks here)
-    DOSEMU_PATH=C:\BINW         extends DOS PATH so wstub finds dos4gw
+    DOSIZ_PATH=C:\BINW         extends DOS PATH so wstub finds dos4gw
 
-dosemu passes these through from the host env via `build_env_block()`.
-Add more via `DOSEMU_PATH` as needed (semicolon-separated DOS path).
+dosiz passes these through from the host env via `build_env_block()`.
+Add more via `DOSIZ_PATH` as needed (semicolon-separated DOS path).
 
 ### C dialect is C89 only
 
@@ -205,11 +205,11 @@ won't compile with Watcom without a significant preprocessing pass.
     file hello
     name hello.exe
     EOF
-    WATCOM='C:\' INCLUDE='C:\H' DOSEMU_PATH='C:\BINW' \
-      dosemu binw/wcc386.exe hello.c
-    WATCOM='C:\' DOSEMU_PATH='C:\BINW' \
-      dosemu binw/wlink.exe @link.cmd
-    DOSEMU_PATH='C:\BINW' dosemu hello.exe
+    WATCOM='C:\' INCLUDE='C:\H' DOSIZ_PATH='C:\BINW' \
+      dosiz binw/wcc386.exe hello.c
+    WATCOM='C:\' DOSIZ_PATH='C:\BINW' \
+      dosiz binw/wlink.exe @link.cmd
+    DOSIZ_PATH='C:\BINW' dosiz hello.exe
 
 The compile step emits `hello.obj` (OMF).  The link step reads OMF
 COMMENT records (0xA3 "default library") embedded by wcc386 and
@@ -219,11 +219,11 @@ pulls in `clib3r.lib` automatically -- you don't need to list it.
 
 Same shape, different tools:
 
-    WATCOM='C:\' INCLUDE='C:\H' DOSEMU_PATH='C:\BINW' \
-      dosemu binw/wcc.exe -ml hello.c          # -ml = large memory model
-    WATCOM='C:\' DOSEMU_PATH='C:\BINW' \
-      dosemu binw/wlink.exe @link16.cmd        # link16.cmd: "system dos"
-    dosemu hello.exe
+    WATCOM='C:\' INCLUDE='C:\H' DOSIZ_PATH='C:\BINW' \
+      dosiz binw/wcc.exe -ml hello.c          # -ml = large memory model
+    WATCOM='C:\' DOSIZ_PATH='C:\BINW' \
+      dosiz binw/wlink.exe @link16.cmd        # link16.cmd: "system dos"
+    dosiz hello.exe
 
 Needs `lib286/` installed.  Pure MZ output, no extender, runs directly.
 
@@ -242,7 +242,7 @@ flag needed.
 
 ### What still doesn't
 
-Nothing substantive.  The Watcom pipeline is complete through dosemu
+Nothing substantive.  The Watcom pipeline is complete through dosiz
 as of 2026-04-23.
 
 
@@ -250,7 +250,7 @@ as of 2026-04-23.
 
 DOS extenders are bundled with the compiler output -- the first
 paragraphs of an MZ contain the extender's loader, the tail contains
-the LE/LX/REX payload.  dosemu auto-detects extender signatures in
+the LE/LX/REX payload.  dosiz auto-detects extender signatures in
 the MZ stub (see `load_program_at` in bridge.cc) and treats the file
 as plain MZ when detected, letting the extender's own loader handle
 the PM switch.
@@ -275,43 +275,43 @@ Expand the detection list in `bridge.cc` if you need one of these.
 
 - **DOS/4GW**: the extender shipped with Watcom.  Loads LE.  The
   stub that's embedded in your hello.exe looks up `dos4gw.exe` on
-  PATH at runtime and chains to it.  Our `DOSEMU_PATH=C:\BINW`
+  PATH at runtime and chains to it.  Our `DOSIZ_PATH=C:\BINW`
   makes this work.  Output: LE format, 32-bit, flat.
 - **DOS/32A**: drop-in replacement for DOS/4GW.  Supposedly
-  faster.  Not tested under dosemu.
-- **PharLap / DOS/16M**: 286 16-bit PM.  Not tested under dosemu.
+  faster.  Not tested under dosiz.
+- **PharLap / DOS/16M**: 286 16-bit PM.  Not tested under dosiz.
 - **PMODE/W**: smaller stub (~10 KB) than DOS/4GW (~260 KB).  Our
   LE loader handles PMODE/W-bound binaries via the extender-bypass
   path (no special code).
 
 
-## dosemu-specific knobs that matter
+## dosiz-specific knobs that matter
 
 ### Environment variables (host side)
 
-    DOSEMU_PATH          Appended to the hardcoded DOS PATH="C:\".
+    DOSIZ_PATH          Appended to the hardcoded DOS PATH="C:\".
                          Colon-separated on host, semicolons in the
                          DOS env block.  Typical: C:\BINW (Watcom),
                          C:\DJGPP\BIN (DJGPP).
 
-    DOSEMU_DPMI_RING0    Opt out of ring-3 DPMI (default is ring-3
+    DOSIZ_DPMI_RING0    Opt out of ring-3 DPMI (default is ring-3
                          since 2bafe81).  Set only if you're running
                          legacy ring-0-dependent DPMI tests.
 
-    DOSEMU_TRACE         Enable verbose INT 21h / INT 31 / XMS / INT16
+    DOSIZ_TRACE         Enable verbose INT 21h / INT 31 / XMS / INT16
                          tracing.  One print per call; useful when
                          debugging "why does this program fail at
                          startup".
 
-    DOSEMU_4B_TRACE      AH=4B entry/exit detail -- CPU state, LDT
+    DOSIZ_4B_TRACE      AH=4B entry/exit detail -- CPU state, LDT
                          restores, IDT base, IRET frame bytes.
 
-    DOSEMU_EXC_TRACE     PM exception dispatch detail -- fault vector,
+    DOSIZ_EXC_TRACE     PM exception dispatch detail -- fault vector,
                          CS:EIP at fault, ring-0 stack frame, bytes
                          at the failing EIP.  Essential for debugging
                          "recursive-fault loop" symptoms.
 
-    DOSEMU_CPU_TRACE     Forces core=normal and hooks the interpreter
+    DOSIZ_CPU_TRACE     Forces core=normal and hooks the interpreter
                          for per-instruction trace.  Very slow; only
                          for last-resort debugging.
 
@@ -324,16 +324,16 @@ Expand the detection list in `bridge.cc` if you need one of these.
 The DOS env block is ENV_BYTES (currently 4 KB) total.  Each var
 is ASCIIZ.  We truncate host-side values > 200 bytes as a sanity
 cap.  If a host env var like `PATH` is very long and you want it
-in the DOS env, stage it via `DOSEMU_PATH` (which is purpose-built
+in the DOS env, stage it via `DOSIZ_PATH` (which is purpose-built
 for extending the DOS PATH) rather than hoping the full host PATH
 passes through -- it doesn't.
 
 ### Drive mapping
 
-dosemu maps the host current directory to `C:\` at startup.  There's
+dosiz maps the host current directory to `C:\` at startup.  There's
 no way to mount multiple drives; everything has to be under one
 host tree, or `cd`'d into before invocation.  For toolchains with
-complex layouts (Watcom's `binw/`, `h/`, `lib386/`, ...), run dosemu
+complex layouts (Watcom's `binw/`, `h/`, `lib386/`, ...), run dosiz
 from the install root so everything appears under `C:\`.
 
 
@@ -476,7 +476,7 @@ they don't dwarf BIGTEST.EXE in the commit tree.
   committed .EXE fixtures only; the Watcom path is user-locally
   gated in `run.sh`.
 - **Embed dos4gw.exe directly in our LE loader**: considered and
-  rejected.  The user-facing `DOSEMU_PATH` setup is explicit and
+  rejected.  The user-facing `DOSIZ_PATH` setup is explicit and
   lets people pick their own extender version.
 
 
@@ -485,7 +485,7 @@ they don't dwarf BIGTEST.EXE in the commit tree.
 This doc is the condensed result of a 2026-04-22 to 2026-04-23
 session that went from "33/33 suite, can't run cpp.exe" to "39/39
 suite, full DJGPP + Open Watcom 32-bit + 16-bit pipelines all
-working through dosemu".  Twelve-ish commits, each root-caused to
+working through dosiz".  Twelve-ish commits, each root-caused to
 a specific DOS interface we were approximating badly.  See `WIP.md`
 for the session-by-session play-by-play if you need to trace why a
 specific behavior is the way it is.

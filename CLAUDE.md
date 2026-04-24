@@ -1,4 +1,4 @@
-# dosemu project conventions
+# dosiz project conventions
 
 ## Workflow
 

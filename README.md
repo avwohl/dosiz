@@ -1,4 +1,4 @@
-# dosemu
+# dosiz
 
 An MS-DOS emulator that runs DOS programs by linking the
 [dosbox-staging](https://github.com/dosbox-staging/dosbox-staging) CPU and
@@ -16,14 +16,14 @@ hand-crafted fixtures; real DOS4G-hosted Watcom binaries load their
 full image + apply all fixups but stall on the runtime's DOS4G
 pre-entry environment convention (a DPMI-host-compatibility gap).
 
-	dosemu tests/EXE2BIN.EXE              → Open Watcom banner   (real DOS-hosted)
-	dosemu tests/HELLO_W.EXE              → hello from watcom    (Watcom cross-compiled)
-	dosemu tests/HELLO_B.COM              → hello from bcc       (bcc cross-compiled)
-	dosemu tests/LE_MIN.EXE               → exit 0                (hand-crafted LE)
-	echo F | dosemu xcopy.exe src dst     → copies src to dst    (FreeDOS xcopy)
-	dosemu mTCP-FTP.EXE                   → prints usage banner  (Open Watcom 16-bit, real DOS)
+	dosiz tests/EXE2BIN.EXE              → Open Watcom banner   (real DOS-hosted)
+	dosiz tests/HELLO_W.EXE              → hello from watcom    (Watcom cross-compiled)
+	dosiz tests/HELLO_B.COM              → hello from bcc       (bcc cross-compiled)
+	dosiz tests/LE_MIN.EXE               → exit 0                (hand-crafted LE)
+	echo F | dosiz xcopy.exe src dst     → copies src to dst    (FreeDOS xcopy)
+	dosiz mTCP-FTP.EXE                   → prints usage banner  (Open Watcom 16-bit, real DOS)
 
-	dosemu wd.exe / vi.exe                → enters 32-bit PM, runs ~0x135 bytes,
+	dosiz wd.exe / vi.exe                → enters 32-bit PM, runs ~0x135 bytes,
 	                                        GP-faults on DOS4G pre-entry selector
 	                                        setup we don't emulate
 
@@ -105,10 +105,10 @@ Prerequisites (Debian/Ubuntu):
 Then:
 
 	make               # applies the dosbox-staging patch, builds dosbox
-	                   # libs, builds dosemu
+	                   # libs, builds dosiz
 
-	build/dosemu --version   # should report the linked dosbox-staging version
-	build/dosemu tests/HELLO.COM
+	build/dosiz --version   # should report the linked dosbox-staging version
+	build/dosiz tests/HELLO.COM
 
 `make distclean` resets the dosbox-staging submodule to its upstream state
 and clears all build artifacts.
@@ -117,7 +117,7 @@ and clears all build artifacts.
 
 Most DOS emulators use native FAT disk images. When developing with a DOS
 compiler that means shuffling files in and out of the disk image for every
-build. dosemu makes the DOS program see host files directly, so you can:
+build. dosiz makes the DOS program see host files directly, so you can:
 
 - Run a DOS C compiler as if it were a native CLI tool
 - Use long filenames on the host while presenting 8.3 names to DOS
@@ -125,13 +125,13 @@ build. dosemu makes the DOS program see host files directly, so you can:
 - Redirect DOS printer / AUX I/O to host files
 - Drive graphical DOS programs with `--window`
 
-Because the syscall layer is native C++, dosemu is intended to run on
+Because the syscall layer is native C++, dosiz is intended to run on
 Linux, macOS, Windows, iOS, iPadOS, and Android — the same platform set
 cpmemu already covers.
 
 ## Architecture
 
-	dosemu binary
+	dosiz binary
 		dosbox-staging CPU + PC hardware (linked as library)
 		host-side DOS: INT 21h handler → C++ file / memory / process calls
 		.cfg parser (cpmemu-style)
@@ -141,18 +141,18 @@ implements what that DOS does.
 
 ## Usage
 
-	dosemu [options] PROGRAM.EXE [args...]
-	dosemu [options] config.cfg
-	dosemu PROG                         # bare name -- search DOSEMU_PATH
+	dosiz [options] PROGRAM.EXE [args...]
+	dosiz [options] config.cfg
+	dosiz PROG                         # bare name -- search DOSIZ_PATH
 
-`dosemu PROG` looks for `PROG.COM` (preferred) or `PROG.EXE` first in the
-current directory, then in each `:`-separated entry of `DOSEMU_PATH`.
+`dosiz PROG` looks for `PROG.COM` (preferred) or `PROG.EXE` first in the
+current directory, then in each `:`-separated entry of `DOSIZ_PATH`.
 Matching is case-insensitive. If a sidecar `PROG.cfg` exists next to the
 resolved executable, it is auto-loaded as configuration (drive mounts,
 text-mode, file mappings) before the program runs:
 
-	export DOSEMU_PATH=~/dos/bin:/usr/local/dos/bin
-	dosemu tcc hello.c                  # finds tcc.exe + tcc.cfg (if any)
+	export DOSIZ_PATH=~/dos/bin:/usr/local/dos/bin
+	dosiz tcc hello.c                  # finds tcc.exe + tcc.cfg (if any)
 
 Options:
 

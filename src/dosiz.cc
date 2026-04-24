@@ -1,10 +1,10 @@
 //
-// dosemu.cc — command-line entry point.
+// dosiz.cc — command-line entry point.
 //
-// dosemu links dosbox-staging's CPU + PC-hardware emulator in-process and
+// dosiz links dosbox-staging's CPU + PC-hardware emulator in-process and
 // traps DOS INT 21h to C++ implementations running on the host, the way
 // cpmemu handles CP/M BDOS calls. This file parses the CLI and .cfg into a
-// dosemu::Config, then hands control to the (not-yet-wired) emulator bridge.
+// dosiz::Config, then hands control to the (not-yet-wired) emulator bridge.
 //
 
 #include "bridge.h"
@@ -42,15 +42,15 @@ static bool ends_with(const std::string &s, const std::string &suffix) {
 }
 
 int main(int argc, char **argv) {
-  dosemu::Config cfg;
+  dosiz::Config cfg;
 
   int i = 1;
   for (; i < argc; ++i) {
     std::string a = argv[i];
     if (a == "--help" || a == "-h") { print_usage(argv[0]); return 0; }
     if (a == "--version") {
-      std::printf("dosemu 0.1.0-dev (linked against dosbox-staging %s)\n",
-                  dosemu::bridge::dosbox_version());
+      std::printf("dosiz 0.1.0-dev (linked against dosbox-staging %s)\n",
+                  dosiz::bridge::dosbox_version());
       return 0;
     }
     if (a == "--window")            { cfg.headless = false; continue; }
@@ -60,7 +60,7 @@ int main(int argc, char **argv) {
     if (a.rfind("--memsize=", 0) == 0) { cfg.memsize_mb = std::atoi(a.c_str()+10); continue; }
     if (a == "--") { ++i; break; }
     if (a.size() > 1 && a[0] == '-') {
-      std::fprintf(stderr, "dosemu: unknown option: %s\n", a.c_str());
+      std::fprintf(stderr, "dosiz: unknown option: %s\n", a.c_str());
       return 1;
     }
     break;
@@ -74,22 +74,22 @@ int main(int argc, char **argv) {
   std::string first = argv[i];
   if (ends_with(first, ".cfg") || ends_with(first, ".conf")) {
     // Explicit config file.
-    if (!dosemu::load_config_file(first, cfg)) return 1;
+    if (!dosiz::load_config_file(first, cfg)) return 1;
     for (++i; i < argc; ++i) cfg.args.emplace_back(argv[i]);
   } else {
     // Program name (bare, with extension, or with path).  Resolve on
-    // DOSEMU_PATH and auto-load a sidecar .cfg if present.
-    std::string resolved = dosemu::resolve_program_path(first);
+    // DOSIZ_PATH and auto-load a sidecar .cfg if present.
+    std::string resolved = dosiz::resolve_program_path(first);
     if (resolved.empty()) {
-      std::fprintf(stderr, "dosemu: cannot find '%s' on DOSEMU_PATH\n",
+      std::fprintf(stderr, "dosiz: cannot find '%s' on DOSIZ_PATH\n",
                    first.c_str());
       return 1;
     }
-    const std::string sidecar = dosemu::sidecar_cfg(resolved);
+    const std::string sidecar = dosiz::sidecar_cfg(resolved);
     if (!sidecar.empty()) {
-      if (!dosemu::load_config_file(sidecar, cfg)) return 1;
+      if (!dosiz::load_config_file(sidecar, cfg)) return 1;
       if (cfg.verbose > 0)
-        std::fprintf(stderr, "dosemu: loaded sidecar %s\n", sidecar.c_str());
+        std::fprintf(stderr, "dosiz: loaded sidecar %s\n", sidecar.c_str());
     }
     // The resolved path always wins over any `program =` inside the sidecar.
     cfg.program = resolved;
@@ -97,11 +97,11 @@ int main(int argc, char **argv) {
   }
 
   if (cfg.program.empty()) {
-    std::fprintf(stderr, "dosemu: no program to run (set 'program =' in cfg or pass on CLI)\n");
+    std::fprintf(stderr, "dosiz: no program to run (set 'program =' in cfg or pass on CLI)\n");
     return 1;
   }
 
-  int rc = dosemu::bridge::run_program(cfg);
+  int rc = dosiz::bridge::run_program(cfg);
   if (rc < 0) return 1;
   // dosbox's module singletons have no guaranteed destruction order -- the
   // PIC destructor touches already-freed IO maps on exit, and the heap

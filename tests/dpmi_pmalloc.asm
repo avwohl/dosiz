@@ -1,7 +1,7 @@
 ; dpmi_pmalloc.asm -- exercises the pm_arena fallback tier of AX=0501.
 ;
 ; MCB arena caps out at 0xFFFF paragraphs (~1MB).  Asking for >1MB
-; forces dosemu to fall through to pm_alloc in the extended-memory
+; forces dosiz to fall through to pm_alloc in the extended-memory
 ; pool above 1MB.  For pm_arena blocks the handle encoding is
 ; SI:DI = high:low of the host linear base (SI >= 0x0010 because
 ; base >= 0x100000).

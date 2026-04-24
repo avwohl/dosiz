@@ -1,7 +1,7 @@
 # Minimal wlink.lnk for Open Watcom v2 DOS/4G builds.
 #
 # Drop this into $WATCOM/binw/wlink.lnk to unblock `wcc386 hello.c &&
-# wlink hello` through dosemu.  See docs/watcom-setup.md for context.
+# wlink hello` through dosiz.  See docs/watcom-setup.md for context.
 #
 # Without this file, the fresh open-watcom-v2 Current-build release
 # produces binaries that dos4gw.exe rejects as "not a WATCOM

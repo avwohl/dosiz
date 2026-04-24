@@ -1,6 +1,6 @@
-# Building Open Watcom DOS/4G programs under dosemu
+# Building Open Watcom DOS/4G programs under dosiz
 
-`wcc386 hello.c && wlink hello` works end-to-end under dosemu -- you
+`wcc386 hello.c && wlink hello` works end-to-end under dosiz -- you
 can compile C programs to DOS/4G LE executables, link them, and run
 the result.  A fresh Open Watcom v2 release needs exactly one config
 file in place (`binw/wlink.lnk`) to satisfy its own `wlink`, and a
@@ -13,7 +13,7 @@ few environment variables on the host side.
 2. Extract with `7z x open-watcom-2_0-c-win-x86.exe 'binw/*' 'lib386/*' 'h/*'`
 3. Drop [`patches/watcom-wlink.lnk`](../patches/watcom-wlink.lnk)
    into `<watcom>/binw/wlink.lnk`
-4. Set `WATCOM=C:\`, `INCLUDE=C:\H`, `DOSEMU_PATH=C:\BINW` when invoking dosemu
+4. Set `WATCOM=C:\`, `INCLUDE=C:\H`, `DOSIZ_PATH=C:\BINW` when invoking dosiz
 5. Build from inside the `<watcom>` directory
 
     ```
@@ -27,11 +27,11 @@ few environment variables on the host side.
     file hello
     name hello.exe
     EOF
-    WATCOM='C:\' INCLUDE='C:\H' DOSEMU_PATH='C:\BINW' \
-      dosemu binw/wcc386.exe hello.c
-    WATCOM='C:\' DOSEMU_PATH='C:\BINW' \
-      dosemu binw/wlink.exe @link.cmd
-    DOSEMU_PATH='C:\BINW' dosemu hello.exe
+    WATCOM='C:\' INCLUDE='C:\H' DOSIZ_PATH='C:\BINW' \
+      dosiz binw/wcc386.exe hello.c
+    WATCOM='C:\' DOSIZ_PATH='C:\BINW' \
+      dosiz binw/wlink.exe @link.cmd
+    DOSIZ_PATH='C:\BINW' dosiz hello.exe
     ```
 
     Output: `hello-watcom-ok`.
@@ -56,11 +56,11 @@ library paths, and the wstub.exe launcher).  With it in place,
 `wlink` emits a DOS/4G LE with the right entry chain and dos4gw
 accepts it.
 
-## Why this is a dosemu doc, not a bug report
+## Why this is a dosiz doc, not a bug report
 
 The issue reproduces when running `wcl386`/`wlink` natively on
 Windows against the same release.  It's an Open Watcom
-distribution issue, not a dosemu emulation issue.  Confirming that
+distribution issue, not a dosiz emulation issue.  Confirming that
 the release needs this config file is itself useful information
 for anyone trying to build DOS/4G binaries with the fresh release.
 
@@ -69,10 +69,10 @@ for anyone trying to build DOS/4G binaries with the fresh release.
     WATCOM         The Watcom install root, mapped to the DOS drive.
                    For the "run from ~/ow" pattern above this is "C:\".
     INCLUDE        Header search path.  `C:\H` for Watcom's h/ dir.
-    DOSEMU_PATH    dosemu-only extension to the DOS PATH.
+    DOSIZ_PATH    dosiz-only extension to the DOS PATH.
                    Point at BINW so wstub.exe can find dos4gw.exe.
 
-These pass through from the host environment to the dosemu-simulated
+These pass through from the host environment to the dosiz-simulated
 DOS env block (implemented in `src/bridge.cc:build_env_block`).
 
 ## What works
@@ -95,16 +95,16 @@ Same pipeline, different tools:
     file hello
     name hello.exe
     EOF
-    WATCOM='C:\' INCLUDE='C:\H' DOSEMU_PATH='C:\BINW' \
-      dosemu binw/wcc.exe -ml hello.c
-    WATCOM='C:\' DOSEMU_PATH='C:\BINW' \
-      dosemu binw/wlink.exe @link16.cmd
-    dosemu hello.exe
+    WATCOM='C:\' INCLUDE='C:\H' DOSIZ_PATH='C:\BINW' \
+      dosiz binw/wcc.exe -ml hello.c
+    WATCOM='C:\' DOSIZ_PATH='C:\BINW' \
+      dosiz binw/wlink.exe @link16.cmd
+    dosiz hello.exe
 
 The 16-bit path needs the `lib286/` subdirectory (ships with the
 same `open-watcom-2_0-c-win-x86.exe` installer; extract with
 `7z x ... 'lib286/*'`).  The CRT init sequence calls `AH=63` (Get
-DBCS lead-byte table) early during `_cstart_` -- dosemu returns a
+DBCS lead-byte table) early during `_cstart_` -- dosiz returns a
 properly-terminated `[0,0,0,0]` table at linear `0x0900` so the
 walk succeeds and setlocale continues.  Before that fix the startup
 walked into the IVT interpreting random interrupt vectors as DBCS

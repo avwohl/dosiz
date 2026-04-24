@@ -1,6 +1,6 @@
 ; write.asm — DOS .COM that exercises INT 21h handle-based file I/O.
 ;
-; Creates WROTE.TXT, writes "dosemu-wrote-ok" + CRLF, reads the command
+; Creates WROTE.TXT, writes "dosiz-wrote-ok" + CRLF, reads the command
 ; tail from PSP:80 (one arg expected), appends it if any, closes, exits 0.
 ;
 ; Assemble with:  nasm -f bin tests/write.asm -o tests/WRITE.COM
@@ -45,5 +45,5 @@ bail:
     int 21h
 
 fname   db 'WROTE.TXT', 0
-msg     db 'dosemu-wrote-ok', 13, 10
+msg     db 'dosiz-wrote-ok', 13, 10
 msg_len equ $ - msg

@@ -1,7 +1,7 @@
 ; dpmi_int31.asm — verifies the INT 31h default-deny path.
 ;
 ; Picks an unimplemented DPMI function (AX=FF00h, reserved/unknown)
-; so the default case of dosemu_int31 still returns CF=1 / AX=8001h
+; so the default case of dosiz_int31 still returns CF=1 / AX=8001h
 ; even after stage 4 landed real handlers for AX=0400/0006/0007.
 ; Without the installed stub the call would dispatch through an
 ; un-installed IVT entry and the CPU would fault.

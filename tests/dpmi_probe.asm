@@ -2,7 +2,7 @@
 ; spec: INT 2Fh AX=1687h; on return, AX=0 means DPMI is present, AX!=0
 ; means absent.
 ;
-; dosemu currently reports "absent" -- this fixture locks that in as a
+; dosiz currently reports "absent" -- this fixture locks that in as a
 ; regression test.  When a DPMI host is added in a future session, this
 ; fixture will flip to reporting "present" and additional probes will
 ; check the returned entry point + flags.

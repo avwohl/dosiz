@@ -1,19 +1,19 @@
 //
-// config.h — dosemu runtime configuration, loaded from CLI and/or a .cfg file.
+// config.h — dosiz runtime configuration, loaded from CLI and/or a .cfg file.
 //
 // The .cfg format mirrors cpmemu/examples/example.cfg: a flat "key = value"
 // text file with #-comments, environment variable expansion ($VAR or ${VAR}),
 // and a small set of recognised keys.
 //
 
-#ifndef DOSEMU_CONFIG_H
-#define DOSEMU_CONFIG_H
+#ifndef DOSIZ_CONFIG_H
+#define DOSIZ_CONFIG_H
 
 #include <map>
 #include <string>
 #include <vector>
 
-namespace dosemu {
+namespace dosiz {
 
 enum class FileMode { Auto, Text, Binary };
 
@@ -58,7 +58,7 @@ struct Config {
   std::string cpu_core = "auto";            // dosbox core=
   int         memsize_mb = 16;              // dosbox memsize=
 
-  // dosemu runtime behaviour.
+  // dosiz runtime behaviour.
   bool headless = true;           // Suppress SDL window when true
   int  verbose  = 0;              // 0=quiet, 1=normal, 2=trace
 };
@@ -73,7 +73,7 @@ std::string expand_env_vars(const std::string &s);
 
 // Resolve a bare program name to an absolute host path.  Search order:
 //   1. CWD
-//   2. directories from DOSEMU_PATH (colon-separated)
+//   2. directories from DOSIZ_PATH (colon-separated)
 // Within each directory, tries the name as given if it already has a
 // .com/.exe extension, otherwise tries NAME.COM then NAME.EXE
 // (case-insensitively, per DOS convention).  Returns empty on miss.
@@ -84,6 +84,6 @@ std::string resolve_program_path(const std::string &name);
 // string if no sidecar is present.
 std::string sidecar_cfg(const std::string &program_path);
 
-} // namespace dosemu
+} // namespace dosiz
 
-#endif // DOSEMU_CONFIG_H
+#endif // DOSIZ_CONFIG_H

@@ -1,6 +1,6 @@
 /* dj_env.c -- smoke test: getenv for values the DOS PSP provides.
  *
- * dosemu populates COMSPEC=C:\COMMAND.COM and PATH=C:\ in the env
+ * dosiz populates COMSPEC=C:\COMMAND.COM and PATH=C:\ in the env
  * block regardless of host env.  Check both, then print marker.
  */
 #include <stdio.h>

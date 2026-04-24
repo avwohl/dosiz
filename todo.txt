@@ -1,4 +1,4 @@
-create public repo avwohl/dosemu
+create public repo avwohl/dosiz
 create an msdos emulator
 for a template of how it should work see ../cpmemu
  that provides a z80 emulator and translates CP/M system

@@ -1,5 +1,5 @@
 /*
- * debug_settings.cpp -- Constructor reads all DOSEMU_* env vars once at
+ * debug_settings.cpp -- Constructor reads all DOSIZ_* env vars once at
  * static init.  C++ guarantees namespace-scope objects with static
  * storage duration are constructed before main() runs, and the process
  * environment is fully populated before any constructor fires, so
@@ -11,7 +11,7 @@
 
 #include <cstdlib>
 
-namespace dosemu {
+namespace dosiz {
 
 namespace {
 
@@ -38,29 +38,29 @@ void DebugSettings::reload() {
 
 DebugSettings::DebugSettings() {
   // --- Runtime behavior switches ---
-  dpmi_ring3    = env_present("DOSEMU_DPMI_RING3");
-  dpmi_ring0    = env_present("DOSEMU_DPMI_RING0");
-  force_dpmi    = env_present("DOSEMU_FORCE_DPMI");
-  no_dpmi       = env_present("DOSEMU_NO_DPMI");
-  le_as_mz      = env_present("DOSEMU_LE_AS_MZ");
+  dpmi_ring3    = env_present("DOSIZ_DPMI_RING3");
+  dpmi_ring0    = env_present("DOSIZ_DPMI_RING0");
+  force_dpmi    = env_present("DOSIZ_FORCE_DPMI");
+  no_dpmi       = env_present("DOSIZ_NO_DPMI");
+  le_as_mz      = env_present("DOSIZ_LE_AS_MZ");
 
   // --- Trace flags ---
-  trace         = env_present("DOSEMU_TRACE");
-  dpmi_trace    = env_present("DOSEMU_DPMI_TRACE");
-  exc_trace     = env_present("DOSEMU_EXC_TRACE");
-  ldt_trace     = env_present("DOSEMU_LDT_TRACE");
-  simrm_trace   = env_present("DOSEMU_SIMRM_TRACE");
-  stackwatch    = env_present("DOSEMU_STACKWATCH");
-  int4b_trace   = env_present("DOSEMU_4B_TRACE");
-  int4c_trace   = env_present("DOSEMU_4C_TRACE");
-  open_trace    = env_present("DOSEMU_OPEN_TRACE");
-  write_trace   = env_present("DOSEMU_WRITE_TRACE");
-  cpu_trace     = env_present("DOSEMU_CPU_TRACE");
+  trace         = env_present("DOSIZ_TRACE");
+  dpmi_trace    = env_present("DOSIZ_DPMI_TRACE");
+  exc_trace     = env_present("DOSIZ_EXC_TRACE");
+  ldt_trace     = env_present("DOSIZ_LDT_TRACE");
+  simrm_trace   = env_present("DOSIZ_SIMRM_TRACE");
+  stackwatch    = env_present("DOSIZ_STACKWATCH");
+  int4b_trace   = env_present("DOSIZ_4B_TRACE");
+  int4c_trace   = env_present("DOSIZ_4C_TRACE");
+  open_trace    = env_present("DOSIZ_OPEN_TRACE");
+  write_trace   = env_present("DOSIZ_WRITE_TRACE");
+  cpu_trace     = env_present("DOSIZ_CPU_TRACE");
 
   // --- Strings ---
-  path          = env_str("DOSEMU_PATH");
+  path          = env_str("DOSIZ_PATH");
 }
 
 DebugSettings g_debug;  // static-storage-duration; constructor runs before main().
 
-}  // namespace dosemu
+}  // namespace dosiz

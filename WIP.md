@@ -36,7 +36,7 @@ Structured backlog as of end-of-session today.  Suite is 37/37 green.
     select().  Open Watcom wlink.exe uses this for its banner and
     was stalling on "invalid function" returns.
 
-    DOSEMU_PATH env var: host-side extension for the DOS PATH.  The
+    DOSIZ_PATH env var: host-side extension for the DOS PATH.  The
     value is appended to the hardcoded "C:\\" and inherited by every
     DOS program launched.  Makes Open Watcom's wcc386 + wlink find
     their spawned dos4gw.exe when set to "C:\\BINW".  Also passes
@@ -44,7 +44,7 @@ Structured backlog as of end-of-session today.  Suite is 37/37 green.
     so the Watcom tools can find headers and libraries.
 
     Open Watcom full-build WORKS (2026-04-23).  `wcc386 hello.c
-    && wlink @link.cmd && dosemu hello.exe` runs end-to-end and
+    && wlink @link.cmd && dosiz hello.exe` runs end-to-end and
     prints `hello-watcom-ok`.  Works for multi-arg programs too;
     verified `fact.c` → `12! = 479001600`.
 
@@ -112,11 +112,11 @@ Structured backlog as of end-of-session today.  Suite is 37/37 green.
     Open Watcom wd.exe (LE, runs init)      done         [x]            [x]
     Full C++ program build in FreeCOM       1-2 weeks    blocked        stretch
 
-All six Open Watcom tools run cleanly under dosemu as of this session.
+All six Open Watcom tools run cleanly under dosiz as of this session.
 `wcc386 hello.c` produces a valid OMF object file end-to-end.  Tool
 banners + help output are complete.  Remaining gaps are Watcom-config
 issues (missing `dos4g` system definition, missing `clib3r.lib`,
-missing `*.dip` files for wd.exe) -- not dosemu bugs.
+missing `*.dip` files for wd.exe) -- not dosiz bugs.
 
 Added INT 21 AH=06 (Direct Console I/O) handling: DL!=0xFF writes to
 stdout; DL==0xFF non-blocking read from stdin.  Watcom wlink needs
@@ -217,7 +217,7 @@ Gaps found and closed in this session:
 1. **VCPI install check** -- dosbox only answers AX=DE00 from v86
    mode OR with the JEMM probe convention (CX=0, DI=0x0012).  Our
    probe now sets those; real DOS extenders already do.
-2. **HMA + A20 helpers** -- added to `dosemu_xms_driver` (bridge.cc):
+2. **HMA + A20 helpers** -- added to `dosiz_xms_driver` (bridge.cc):
    AH=01 Request HMA, AH=02 Release, AH=03/05 Enable A20, AH=04/06
    Disable (no-op), AH=07 Query A20.  AH=00 now returns DX=1 ("HMA
    exists") since we keep A20 enableable on demand.
@@ -250,7 +250,7 @@ both gcc 9.3 and gcc 12.2 `cpp.exe`; the fault EIP's bytes in both
 are `;%DJ` — literal ASCII from djgpp.env's `%DJDIR%` substitutions,
 i.e. a return address popped off a stack that was smashed.
 
-**Bug is in DJGPP libc**, not in dosemu and not in GCC.  Source:
+**Bug is in DJGPP libc**, not in dosiz and not in GCC.  Source:
 `src/libc/crt0/c1loadef.c` (djlsr205.zip):
 
 ```c
@@ -287,7 +287,7 @@ Evidence gathered (all in main as of commit df00afc onward):
 
 Not practical to fix in-tree without rebuilding DJGPP libc + every
 tool linked against it; documented here so the next person chasing
-"cpp.exe hangs in dosemu" finds the real culprit.
+"cpp.exe hangs in dosiz" finds the real culprit.
 
 ---
 
@@ -308,25 +308,25 @@ when landed.  Suite is 29/29 at the start of the backlog.
    out.c").  Pre-creating the file changes the error to
    "could not create " (trailing space -- internal outfile
    variable is cleared by flex's freopen-on-stdout dance).
-   Concluding this is a flex-port bug, not a dosemu issue.
+   Concluding this is a flex-port bug, not a dosiz issue.
    Workaround: let flex write to its default `lex.yy.c`
    (equivalently `lexyy.c` in 8.3) and rename afterwards.
 
 ## Medium (multi-session)
 3. ~~**DOS/4GW transfer-buffer allocation.**~~ Also already fixed
-   somewhere along the way.  With `DOSEMU_DPMI_RING3=1
-   DOSEMU_LE_AS_MZ=1`, `wcc386.exe hello.c` now runs through full
+   somewhere along the way.  With `DOSIZ_DPMI_RING3=1
+   DOSIZ_LE_AS_MZ=1`, `wcc386.exe hello.c` now runs through full
    DOS/4GW init and compiles a tiny C program to a valid 305-byte
    OMF object file.  No transfer-buffer error anymore.  Linking
    with wlink.exe also mostly works (just missing a system
    definition file for the DOS/4G target, which is a config issue
-   not a dosemu bug).
+   not a dosiz bug).
 4. ~~**Large LE binaries (`wd.exe` ≥600KB).**~~ Also already fixed.
    `wd.exe` (710KB Watcom debugger) runs through init and emits
    its usage banner.  `wcl386.exe` runs.  Large-LE arena seems
    to no longer be a blocker.  (Subsequent compile+link failures
    are Watcom config issues -- missing system definition + libs --
-   not dosemu bugs.)
+   not dosiz bugs.)
 5. ~~**DJGPP→DJGPP nested exec.**~~  **DONE.**  Parent spawns a
    DJGPP child, child runs to completion, parent resumes cleanly
    and continues past spawnlp.  Ten layered root causes found
@@ -367,7 +367,7 @@ when landed.  Suite is 29/29 at the start of the backlog.
    - **#5.11 (this commit):** `s_int_gate_bits32` must be
      nested-safe.  The outer wrapper sets it to `true`, calls
      the handler, and the handler's AH=4B recursively runs the
-     child which re-enters dosemu_int31_bits32.  The inner
+     child which re-enters dosiz_int31_bits32.  The inner
      wrapper's exit path resets the flag to `false`, corrupting
      the outer wrapper's state.  Later, the outer handler's
      `set_cf()` reads this stale flag, picks flags_off=4 (16-bit
@@ -484,7 +484,7 @@ when landed.  Suite is 29/29 at the start of the backlog.
    implement the state-switch for real.
 8. ~~**QEMM parity**~~  **Done.**  Ring-3 DPMI (CPL=3 client,
    CPL=0 host via TSS) is now the default for 32-bit DPMI
-   entries; `DOSEMU_DPMI_RING0=1` opts back into the legacy
+   entries; `DOSIZ_DPMI_RING0=1` opts back into the legacy
    ring-0 mode for anyone who needs it.  All 25 in-tree DPMI
    fixtures pass in the new default, plus the full 32-entry
    DJGPP/real-world suite.  Clarification on CWSDPMI
@@ -503,7 +503,7 @@ when landed.  Suite is 29/29 at the start of the backlog.
    by writing a memory marker and then spinning (CI timeout =
    pass).  Superseded by `DPMI_STAGE4.COM` and later, which
    actually exit cleanly with a success marker on stdout.
-10. ~~**`DOSEMU_CPU_TRACE` forcing `core=normal`** is surprising.~~
+10. ~~**`DOSIZ_CPU_TRACE` forcing `core=normal`** is surprising.~~
     Now prints a stderr warning explaining the forced downgrade
     so the user isn't surprised by slow execution.  Making the
     dynamic JIT cores honour per-instruction trace hooks is
@@ -513,10 +513,10 @@ when landed.  Suite is 29/29 at the start of the backlog.
 
 ---
 
-# dosemu WIP — DJGPP RUNS END-TO-END (2026-04-22, arm64 Mac)
+# dosiz WIP — DJGPP RUNS END-TO-END (2026-04-22, arm64 Mac)
 
 **DJGPP programs now execute their main() and produce correct stdout
-output under dosemu.**  No SIGSEGV, no crash in libc startup.
+output under dosiz.**  No SIGSEGV, no crash in libc startup.
 
 Verified on:
 - A tiny `write(1, "hello\n", 6)` program: prints `hello`.
@@ -527,10 +527,10 @@ Verified on:
 
 This was achieved by five landed fixes (all in this session):
 
-1. **Mac port** (3d4ee29): dosemu builds+runs natively on arm64
+1. **Mac port** (3d4ee29): dosiz builds+runs natively on arm64
    Darwin.
 2. **uint32_t LDT starter-set bases** (14719af): fixed seg*16 overflow
-   in `dosemu_dpmi_entry`.  Resolved "0xF4 DS-load" symptom but still
+   in `dosiz_dpmi_entry`.  Resolved "0xF4 DS-load" symptom but still
    crashed elsewhere.
 3. **AX=0300 scratch stack relocated** (3ec109d): when client's
    SS=0 in dpmi_regs, use 0x9000:0xFFF0 (top of conv mem) instead
@@ -562,7 +562,7 @@ SPAWN, etc.) pass on arm64 Mac.
 - `malloc` / `free` (100-block 1KB round-trip, no leaks).
 - `argc` / `argv` (correct count and contents from DOS cmd tail).
 - `getenv` (COMSPEC, PATH, HOME, USER, LANG all accessible).
-- Exit-code propagation (return N from main → dosemu rc=N).
+- Exit-code propagation (return N from main → dosiz rc=N).
 
 **Sixth fix (5c3eaaf)**: AH=71 (LFN API) returns `AX=0x7100 CF=1`
 instead of `AX=0x0001 CF=1`.  DJGPP's libc checks `AX == 0x7100`
@@ -605,11 +605,11 @@ CI step `DJGPP integration suite` drives `run.sh`.
 
 (older notes follow)
 
-# dosemu WIP — end of session 2026-04-22 (DJGPP push + first green CI)
+# dosiz WIP — end of session 2026-04-22 (DJGPP push + first green CI)
 
 ## macOS (arm64) port — 2026-04-22
 
-Dev host moved Linux x86-64 → Darwin arm64 (Apple Silicon, 32GB).  dosemu
+Dev host moved Linux x86-64 → Darwin arm64 (Apple Silicon, 32GB).  dosiz
 now builds and runs natively.  Changes:
 
 - `src/CMakeLists.txt`: `if(APPLE)` branch.  Drops GNU-ld
@@ -639,7 +639,7 @@ x86_64 — runs under Rosetta 2 on arm64) installed to `~/djgpp/djgpp`.
 Added `~/djgpp/djgpp/bin` to PATH; `DJGPP=~/djgpp/djgpp/setup/djgpp.env`.
 
 Smoke tests green on arm64 Darwin:
-- `tests/HELLO.COM` → `dosemu-hello-ok` rc=0
+- `tests/HELLO.COM` → `dosiz-hello-ok` rc=0
 - `tests/DPMI_INTEGRATION.COM` → `dpmi-integration=ok` rc=0
 - A fresh-compiled djecho reaches the exact same `0xF4` DS-load state
   described below (see "the remaining mystery").
@@ -647,10 +647,10 @@ Smoke tests green on arm64 Darwin:
 ## 0xF4 mystery SOLVED (2026-04-22, arm64 Mac)
 
 Traced via PSP[0x2C]/stubinfo/LDT dumps from inside the PM-exception
-dispatcher (env-gated debug: `DOSEMU_EXC_TRACE`, `DOSEMU_DPMI_TRACE`,
-`DOSEMU_LDT_TRACE`).
+dispatcher (env-gated debug: `DOSIZ_EXC_TRACE`, `DOSIZ_DPMI_TRACE`,
+`DOSIZ_LDT_TRACE`).
 
-**Root cause**: `dosemu_dpmi_entry`'s computation of the "starter set"
+**Root cause**: `dosiz_dpmi_entry`'s computation of the "starter set"
 LDT descriptor bases used `uint16_t` for `cs_base`/`ds_base`/`ss_base`/
 `es_base` (= RM_seg * 16).  Any RM segment value >= 0x1000 produces
 `seg*16 >= 0x10000`, which overflows uint16 and silently truncates.
@@ -731,7 +731,7 @@ The CPU trace shows EIP progresses correctly through 0x2EE -> 0x33A
 **then garbage from 0x2FB onwards** (executing random bytes as
 instructions).
 
-Memory dump at fault time (`DOSEMU_EXC_TRACE=1`, custom probe) shows
+Memory dump at fault time (`DOSIZ_EXC_TRACE=1`, custom probe) shows
 stub bytes at 0x13FA..0x13FF have been **overwritten** from the
 expected `08 66 8b 0e 27 08` (the end of `mov edi,[0x823]` + all of
 `mov ecx,[0x827]`) to `c8 20 00 f0 47 30`.  So the CALL itself
@@ -757,7 +757,7 @@ passed in EDI (not DI), or does it use some other selector?
 
 Added `mem_writed_inline` hook on linear `0x139370` (= client DS base
 `0x120000` + `0x19370`) that logs every write.  Rebuilt + ran djecho
-with `DOSEMU_DPMI_RING3=1`.
+with `DOSIZ_DPMI_RING3=1`.
 
 **Result**: the slot is written exactly **one** time during the entire
 run, with value **`0x00000000`**.  Never populated.  That confirms
@@ -786,7 +786,7 @@ and `djasm.exe` now run through:
  5. Handler's exit cleanup re-faults (currently on a BOUND check at
     0x7724, previously on `cli` at 0x1ACC / `mov ds, 0x37` at 0x7775).
  6. Recursion guard (5-same-fault threshold) catches the loop.
- 7. dosemu exits rc=0 with readable SIGSEGV diagnostic on stderr.
+ 7. dosiz exits rc=0 with readable SIGSEGV diagnostic on stderr.
 
 The cascade of fixes that got us here:
 
@@ -824,10 +824,10 @@ before anyone in the exit path reads it.  Likely a missing
 stubinfo or env-setup piece that our DPMI host doesn't provide
 correctly to DJGPP.
 
-**Pragmatic status**: dosemu now terminates cleanly on DJGPP
+**Pragmatic status**: dosiz now terminates cleanly on DJGPP
 SIGSEGV (rc=0 with readable diagnostic output).  No actual DJGPP
 program execution yet -- main() never runs -- but every underlying
-dosemu-side bug that was ALSO on the critical path has been fixed.
+dosiz-side bug that was ALSO on the critical path has been fixed.
 
 ## CI: first fully green run in repo history
 
@@ -1007,7 +1007,7 @@ is functional under our DPMI host.
      handler would print + `_exit`, but `_exit` itself faults (same
      DS=0xF4 story, different call site at 0x1ACC), re-entering the
      handler, infinite spin.  Now: prints dump once, attempts exit,
-     recursion guard fires, dosemu exits rc=0.
+     recursion guard fires, dosiz exits rc=0.
 
    **Outcome:** DJGPP djecho.exe prints its full SIGSEGV diagnostic:
    ```
@@ -1059,9 +1059,9 @@ host.  Real DPMI hosts (CWSDPMI, HDPMI, WINOS2) all use paging.
 
 (Prior-session notes follow.)
 
-# dosemu WIP — end of session 2026-04-21 (continued)
+# dosiz WIP — end of session 2026-04-21 (continued)
 
-All work is committed and pushed to `github.com/avwohl/dosemu` (main).
+All work is committed and pushed to `github.com/avwohl/dosiz` (main).
 No uncommitted changes to rescue. The `dosbox-staging` submodule always
 shows "modified content" because the Makefile patches its
 `src/gui/sdlmain.cpp` at build time from
@@ -1075,8 +1075,8 @@ PM entry -> 32-bit execution -> PM INT 21h AH=4Ch -> exit 0.
 ## Resume checklist (fresh machine)
 
 ```
-git clone --recurse-submodules git@github.com:avwohl/dosemu.git
-cd dosemu
+git clone --recurse-submodules git@github.com:avwohl/dosiz.git
+cd dosiz
 
 sudo apt install -y build-essential cmake ninja-build meson \
     pkg-config libsdl2-dev libsdl2-net-dev libpng-dev \
@@ -1090,15 +1090,15 @@ sudo snap install --edge open-watcom
 
 make                          # 5 min cold; seconds on incremental
 
-build/dosemu tests/HELLO.COM               # prints dosemu-hello-ok
-build/dosemu tests/DPMI_INTEGRATION.COM    # end-to-end 32-bit PM smoke test
+build/dosiz tests/HELLO.COM               # prints dosiz-hello-ok
+build/dosiz tests/DPMI_INTEGRATION.COM    # end-to-end 32-bit PM smoke test
 ```
 
 CI runs every fixture on every push via `.github/workflows/ci.yml`.
 
 ## Memory state (Claude's)
 
-At `~/.claude/projects/-home-wohl-src-dosemu/memory/`. Read first:
+At `~/.claude/projects/-home-wohl-src-dosiz/memory/`. Read first:
 
 - `MEMORY.md` — index (always loaded into context)
 - `architecture.md` — cpmemu-style: dosbox linked in-process, host C++
@@ -1214,8 +1214,8 @@ Commits `dbbe111` + `b487526` + `98ce926` + `db1f0c6` + `cbefb92` +
   one descriptor per object with base/limit/access/D-bit derived
   from the object's flags.  Selector stashed in `LeObject.ldt_sel`.
 - `pm_setup_gdt_and_idt` extracted as shared helper used by both
-  `dosemu_dpmi_entry` and the new LE launch path.
-- `le_launch_pm_prep` seeds GDT/IDT from RM; `dosemu_startup`
+  `dosiz_dpmi_entry` and the new LE launch path.
+- `le_launch_pm_prep` seeds GDT/IDT from RM; `dosiz_startup`
   gains an `is_pm` branch that flips CR0.PE, CPU_LLDT, loads
   DS/ES/SS from LDT selectors, CPU_JMP to entry CS:EIP, then
   DOSBOX_RunMachine.
@@ -1246,7 +1246,7 @@ curl -sL -o ow.exe \
 7z x -y ow.exe 'binw/*' 'lib286/*' 'h/*'
 ```
 
-Real-mode MZ tools that run in dosemu today:
+Real-mode MZ tools that run in dosiz today:
 
 	binw/owcc.exe       C compiler driver
 	binw/exe2bin.exe    EXE→COM converter (in repo as tests/EXE2BIN.EXE)
@@ -1264,7 +1264,7 @@ LE binaries the loader now detects but doesn't yet execute:
 ## Cross-compile flow
 
 ```
-mkdir -p ~/dosemu-watcom-test && cd ~/dosemu-watcom-test
+mkdir -p ~/dosiz-watcom-test && cd ~/dosiz-watcom-test
 cat > hello.c <<'EOF'
 #include <stdio.h>
 int main(void) { printf("hello from watcom\n"); return 0; }
@@ -1272,8 +1272,8 @@ EOF
 snap run open-watcom.owcc-dos    -o hello.exe   hello.c   # 16-bit RM
 snap run open-watcom.owcc-dos4g  -o hello32.exe hello.c   # 32-bit DOS4G
 
-~/src/dosemu/build/dosemu hello.exe      # works
-~/src/dosemu/build/dosemu hello32.exe    # detects LE, can't run yet
+~/src/dosiz/build/dosiz hello.exe      # works
+~/src/dosiz/build/dosiz hello32.exe    # detects LE, can't run yet
 ```
 
 ## DOS32A status
@@ -1286,7 +1286,7 @@ gap for `DOS32A foo.exe` end-to-end is the LE loader above.
 ## QEMM parity investigation — structural gap found
 
 Spent time tracing exactly why our DPMI doesn't satisfy DOS/4GW
-(with `DOSEMU_FORCE_DPMI=1`) or DJGPP's go32 stub.  Found the
+(with `DOSIZ_FORCE_DPMI=1`) or DJGPP's go32 stub.  Found the
 answer in CWSDPMI's open source (`/tmp/cwsdpmi` on dev machine):
 
 **We run DPMI clients at ring 0.  Real DPMI hosts run them at
@@ -1324,7 +1324,7 @@ binary).
 For now the practical path (commit 4af6fe5) stands: auto-detect
 bound extenders from MZ stub content, suppress DPMI
 advertisement for them, let them use their own PM machinery.
-`dosemu wcc386.exe hello.c` works with no flags; that's QEMM's
+`dosiz wcc386.exe hello.c` works with no flags; that's QEMM's
 user-facing promise even if the under-the-hood mechanism is
 different.
 
@@ -1383,14 +1383,14 @@ Ordered roughly by leverage / difficulty:
      detection is AH=FFh DH=00 DL=78h per RBIL).
    - DOS/4GW detection stub added (c738cd9): returns
      EAX=0x4734FFFF for that probe.  Alone, insufficient.
-   - **DOSEMU_LE_AS_MZ flag landed (5975c42)**: skip the LE
+   - **DOSIZ_LE_AS_MZ flag landed (5975c42)**: skip the LE
      loader and let the MZ stub run as-is.  For DOS/4GW-bound
      binaries like wcc386.exe, the MZ stub IS the DOS/4GW
      extender; running it means DOS/4GW does its own DPMI init
      via AX=1687h, loads the embedded LE image itself, and sets
      up the selector tables + transfer buffers the Watcom
      runtime expects.
-   With DOSEMU_LE_AS_MZ=1 + `dos4gw.exe` in the workdir (the
+   With DOSIZ_LE_AS_MZ=1 + `dos4gw.exe` in the workdir (the
    extender looks for it by name), wcc386.exe now runs through
    DOS/4GW's full init -- hundreds of INT 21h calls -- and
    emits a real diagnostic: "DOS/16M error: [13] cannot

@@ -1,4 +1,4 @@
-; dos4g_probe.asm -- verifies dosemu answers Watcom's DOS/4GW
+; dos4g_probe.asm -- verifies dosiz answers Watcom's DOS/4GW
 ; detection probe (INT 21h AH=FFh DH=00h DL=78h) with the exact
 ; EAX value real DOS/4GW returns (0x4734FFFF; high word 0x4734 is
 ; byte-swapped "4G" ASCII).  Without this, a Watcom-compiled

@@ -1,5 +1,5 @@
 ; survive.asm — calls an intentionally-unimplemented INT 21h AH and
-; verifies execution continues past it, proving dosemu soft-fails unknown
+; verifies execution continues past it, proving dosiz soft-fails unknown
 ; syscalls instead of killing the program.
 ;
 ; Assemble:  nasm -f bin survive.asm -o SURVIVE.COM

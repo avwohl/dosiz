@@ -1,9 +1,9 @@
 /* dj_nest3.c -- three-level nested DJGPP exec chain.
  *
  * DJ_NEST3 spawns DJ_DJE, which spawns DJ_WRITE.  So the total
- * AH=4B depth under dosemu is:
+ * AH=4B depth under dosiz is:
  *
- *   dosemu -> DJ_NEST3.exe                        (depth 1 PM entry)
+ *   dosiz -> DJ_NEST3.exe                        (depth 1 PM entry)
  *            |-> DJ_DJE.exe                       (depth 2)
  *                  |-> DJ_WRITE.exe               (depth 3)
  *

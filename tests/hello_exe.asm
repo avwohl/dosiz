@@ -35,4 +35,4 @@ section .image vstart=0 follows=.mzhdr
     int  21h
     mov  ax, 4C00h
     int  21h
-msg db 'dosemu-hello-exe-ok', 13, 10, '$'
+msg db 'dosiz-hello-exe-ok', 13, 10, '$'
