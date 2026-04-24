@@ -70,11 +70,15 @@ Structured backlog as of end-of-session today.  Suite is 37/37 green.
     wlink's job is just to make the LE entry chain point at the
     right trampoline, and the 11.0c-style system spec does that.
 
-    What still doesn't work: 16-bit `wcc` + `system dos` link
-    produces a DOS .exe that silently exits after AH=30/63/66/4A
-    startup without calling print.  Likely a Watcom 16-bit CRT
-    init path we don't fully emulate.  Not pursued -- 32-bit
-    DOS/4G covers most real Watcom programs.
+    16-bit wcc + `system dos` also works.  The startup sequence
+    I'd earlier suspected of needing Watcom CRT emulation turned
+    out to be satisfied by the AH=63 (Get DBCS lead-byte table)
+    fix shipped in 44c9e19 -- the 16-bit CRT _cstart_ walks the
+    returned DBCS pointer during setlocale init, and with our old
+    DS:SI=0:0 response it was interpreting the IVT as DBCS ranges
+    and bailing silently.  With the 4-byte `[0,0,0,0]` terminator
+    at linear 0x0900 it proceeds normally.  Regression gate
+    WATCOM16 added to run.sh alongside WATCOM32.
 
     FreeCOM → DJ_DJE → DJ_WRITE three-level nesting chain VERIFIED
     working.  FC_SPAWN regression gate extended to cover it plus

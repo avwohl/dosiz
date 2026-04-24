@@ -85,10 +85,30 @@ Verified against `printf`, `atoi`, multi-digit arithmetic,
 `argc/argv` access.  Complex stdio + math + argv programs build
 and run to completion.
 
-## What still doesn't
+## 16-bit DOS (tiny/small/large model) also works
 
-- 16-bit `wcc` + `system dos` pipeline: compile works, link works,
-  but the built exe silently exits after `AH=30/63/66/4A` without
-  calling print.  Probably a Watcom 16-bit CRT init path we don't
-  emulate fully.  Less useful for the project anyway; 32-bit
-  DOS/4G covers most real programs.
+Same pipeline, different tools:
+
+    cd ~/ow
+    cat > link16.cmd <<'EOF'
+    system dos
+    file hello
+    name hello.exe
+    EOF
+    WATCOM='C:\' INCLUDE='C:\H' DOSEMU_PATH='C:\BINW' \
+      dosemu binw/wcc.exe -ml hello.c
+    WATCOM='C:\' DOSEMU_PATH='C:\BINW' \
+      dosemu binw/wlink.exe @link16.cmd
+    dosemu hello.exe
+
+The 16-bit path needs the `lib286/` subdirectory (ships with the
+same `open-watcom-2_0-c-win-x86.exe` installer; extract with
+`7z x ... 'lib286/*'`).  The CRT init sequence calls `AH=63` (Get
+DBCS lead-byte table) early during `_cstart_` -- dosemu returns a
+properly-terminated `[0,0,0,0]` table at linear `0x0900` so the
+walk succeeds and setlocale continues.  Before that fix the startup
+walked into the IVT interpreting random interrupt vectors as DBCS
+lead-byte ranges and silently aborted.
+
+Verified: printf, atoi, argc/argv, multi-digit arithmetic through
+the 16-bit wcc + system dos pipeline all work end-to-end.

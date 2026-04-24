@@ -532,31 +532,56 @@ if [[ -f ~/ow/binw/wcc386.exe && -f ~/ow/binw/wlink.exe \
         cp patches/watcom-wlink.lnk ~/ow/binw/wlink.lnk
     fi
     watdir=$(mktemp -d)
-    cp -R ~/ow/binw ~/ow/h ~/ow/lib386 "$watdir/"
+    cp -R ~/ow/binw ~/ow/h ~/ow/lib386 ~/ow/lib286 "$watdir/" 2>/dev/null
     cp build/dosemu "$watdir/"
     cat > "$watdir/hello.c" <<'HELLOCEOF'
 #include <stdio.h>
 int main(void) { printf("wat-compile-link-run-ok\n"); return 0; }
 HELLOCEOF
-    cat > "$watdir/link.cmd" <<'LINKEOF'
+
+    # 32-bit DOS/4G pipeline
+    cat > "$watdir/link32.cmd" <<'LINK32EOF'
 system dos4g
 file hello
 name hello.exe
-LINKEOF
+LINK32EOF
     watout=$(cd "$watdir" && \
         WATCOM='C:\' INCLUDE='C:\H' DOSEMU_PATH='C:\BINW' \
         ./dosemu binw/wcc386.exe hello.c 2>/dev/null && \
         WATCOM='C:\' DOSEMU_PATH='C:\BINW' \
-        ./dosemu binw/wlink.exe @link.cmd 2>/dev/null && \
+        ./dosemu binw/wlink.exe @link32.cmd 2>/dev/null && \
         DOSEMU_PATH='C:\BINW' ./dosemu hello.exe 2>/dev/null | tr -d '\r')
-    rm -rf "$watdir"
     if echo "$watout" | grep -q 'wat-compile-link-run-ok'; then
-        printf "  %-12s PASS\n" "WATCOM"
+        printf "  %-12s PASS\n" "WATCOM32"
         pass=$((pass + 1))
     else
-        printf "  %-12s FAIL (out=%q)\n" "WATCOM" "$watout"
+        printf "  %-12s FAIL (out=%q)\n" "WATCOM32" "$watout"
         fail=$((fail + 1))
     fi
+
+    # 16-bit DOS pipeline (if lib286 is installed)
+    if [[ -d "$watdir/lib286" ]]; then
+        rm -f "$watdir/hello.obj" "$watdir/hello.exe"
+        cat > "$watdir/link16.cmd" <<'LINK16EOF'
+system dos
+file hello
+name hello.exe
+LINK16EOF
+        wat16out=$(cd "$watdir" && \
+            WATCOM='C:\' INCLUDE='C:\H' DOSEMU_PATH='C:\BINW' \
+            ./dosemu binw/wcc.exe -ml hello.c 2>/dev/null && \
+            WATCOM='C:\' DOSEMU_PATH='C:\BINW' \
+            ./dosemu binw/wlink.exe @link16.cmd 2>/dev/null && \
+            ./dosemu hello.exe 2>/dev/null | tr -d '\r')
+        if echo "$wat16out" | grep -q 'wat-compile-link-run-ok'; then
+            printf "  %-12s PASS\n" "WATCOM16"
+            pass=$((pass + 1))
+        else
+            printf "  %-12s FAIL (out=%q)\n" "WATCOM16" "$wat16out"
+            fail=$((fail + 1))
+        fi
+    fi
+    rm -rf "$watdir"
 fi
 
 echo ""
