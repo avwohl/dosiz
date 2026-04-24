@@ -12,7 +12,7 @@ bits 16
 
 section .mzhdr vstart=0
     db 'MZ'
-    dw 68           ; 0x02: bytes in last 512-page = total image size (mod 512)
+    dw 67           ; 0x02: bytes in last 512-page = total image size (mod 512)
     dw 1            ; 0x04: total 512-pages (ceil(total / 512))
     dw 0            ; 0x06: reloc count
     dw 2            ; 0x08: header paragraphs (2 * 16 = 32 bytes)

@@ -55,8 +55,23 @@ void RENDER_AddMessages();
 #include <dirent.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <sys/select.h>
 #include <sys/stat.h>
+#ifdef _WIN32
+#include <conio.h>
+#include <io.h>
+#include <windows.h>
+// MinGW's <io.h> declares single-arg `mkdir(path)`; we want the POSIX
+// two-arg form to match Linux/macOS sites.  Drop the mode on Windows.
+#define dosiz_mkdir(path, mode) ::mkdir(path)
+// MinGW has no setenv(); _putenv_s is the native equivalent and
+// always "overwrites" (which is what every call site here wants).
+static inline int setenv(const char *name, const char *value, int /*overwrite*/) {
+  return _putenv_s(name, value);
+}
+#else
+#include <sys/select.h>
+#define dosiz_mkdir(path, mode) ::mkdir((path), (mode))
+#endif
 #include <ctime>
 #include <map>
 #include <memory>
@@ -71,6 +86,30 @@ const char *dosbox_version() {
 }
 
 namespace {
+
+// Non-blocking check: is a byte available on stdin right now?
+//
+// POSIX uses select() on STDIN_FILENO; Windows needs to branch on the
+// handle type because select() only works on sockets there.  Returns
+// true if a subsequent ::read() on stdin is guaranteed not to block.
+inline bool stdin_has_data() {
+#ifdef _WIN32
+  const intptr_t os = _get_osfhandle(_fileno(stdin));
+  if (os == -1) return false;
+  const HANDLE h = reinterpret_cast<HANDLE>(os);
+  const DWORD type = GetFileType(h);
+  if (type == FILE_TYPE_CHAR) return _kbhit() != 0;
+  DWORD avail = 0;
+  if (PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr)) return avail > 0;
+  return type == FILE_TYPE_DISK;  // regular file: read never blocks
+#else
+  fd_set rd;
+  FD_ZERO(&rd);
+  FD_SET(STDIN_FILENO, &rd);
+  struct timeval zero = {0, 0};
+  return ::select(STDIN_FILENO + 1, &rd, nullptr, nullptr, &zero) > 0;
+#endif
+}
 
 constexpr uint16_t PSP_SEG          = 0x0100;
 constexpr uint16_t COM_ENTRY_OFFSET = 0x0100;
@@ -633,7 +672,7 @@ std::string mangle_8_3(const std::string &name, std::set<std::string> &used) {
 // DOS file-time pair: DS:1E format ((h<<11)|(m<<5)|(s/2)), date ((y-1980)<<9|(mo<<5)|d).
 void dos_time_from_unix(time_t t, uint16_t &date, uint16_t &dostime) {
   struct tm lt;
-  localtime_r(&t, &lt);
+  cross::localtime_r(&t, &lt);
   dostime = static_cast<uint16_t>((lt.tm_hour << 11) | (lt.tm_min << 5)
                                   | (lt.tm_sec / 2));
   date    = static_cast<uint16_t>(((lt.tm_year + 1900 - 1980) << 9)
@@ -1621,9 +1660,7 @@ Bitu dosiz_int16() {
     case 0x01:
     case 0x11: {          // check key: ZF=1 if none, else ZF=0 + AX=key
       if (s_int16_peek < 0) {
-        fd_set rd; FD_ZERO(&rd); FD_SET(STDIN_FILENO, &rd);
-        struct timeval zero = {0, 0};
-        if (::select(STDIN_FILENO + 1, &rd, nullptr, nullptr, &zero) > 0) {
+        if (stdin_has_data()) {
           uint8_t c;
           if (::read(STDIN_FILENO, &c, 1) == 1) {
             if (c == '\n') c = '\r';
@@ -3732,11 +3769,7 @@ Bitu dosiz_int21() {
     }
 
     case 0x0B: {  // Check stdin status.  AL=0xFF if data ready, 0 if not.
-      fd_set rd;
-      FD_ZERO(&rd); FD_SET(STDIN_FILENO, &rd);
-      struct timeval zero = {0, 0};
-      const int n = ::select(STDIN_FILENO + 1, &rd, nullptr, nullptr, &zero);
-      reg_al = (n > 0 && FD_ISSET(STDIN_FILENO, &rd)) ? 0xFF : 0x00;
+      reg_al = stdin_has_data() ? 0xFF : 0x00;
       return CBRET_NONE;
     }
 
@@ -3756,9 +3789,7 @@ Bitu dosiz_int21() {
         CALLBACK_SZF(false);
         return CBRET_NONE;
       }
-      fd_set rd; FD_ZERO(&rd); FD_SET(STDIN_FILENO, &rd);
-      struct timeval zero = {0, 0};
-      if (::select(STDIN_FILENO + 1, &rd, nullptr, nullptr, &zero) > 0) {
+      if (stdin_has_data()) {
         uint8_t c;
         if (::read(STDIN_FILENO, &c, 1) == 1) {
           if (c == '\n') c = '\r';
@@ -4404,7 +4435,7 @@ Bitu dosiz_int21() {
     case 0x2A: {  // Get date: AL=dow (0=Sun), CX=year, DH=month, DL=day
       const time_t t = std::time(nullptr);
       struct tm lt;
-      localtime_r(&t, &lt);
+      cross::localtime_r(&t, &lt);
       reg_al = static_cast<uint8_t>(lt.tm_wday);
       reg_cx = static_cast<uint16_t>(lt.tm_year + 1900);
       reg_dh = static_cast<uint8_t>(lt.tm_mon + 1);
@@ -4416,7 +4447,7 @@ Bitu dosiz_int21() {
       struct timespec ts;
       clock_gettime(CLOCK_REALTIME, &ts);
       struct tm lt;
-      localtime_r(&ts.tv_sec, &lt);
+      cross::localtime_r(&ts.tv_sec, &lt);
       reg_ch = static_cast<uint8_t>(lt.tm_hour);
       reg_cl = static_cast<uint8_t>(lt.tm_min);
       reg_dh = static_cast<uint8_t>(lt.tm_sec);
@@ -4502,7 +4533,7 @@ Bitu dosiz_int21() {
     case 0x39: {  // mkdir: DS:DX = path
       const std::string dos_path  = read_dos_string(SegValue(ds), reg_dx);
       const std::string host_path = dos_to_host(dos_path);
-      if (::mkdir(host_path.c_str(), 0755) < 0) { return_error(0x03); break; }
+      if (dosiz_mkdir(host_path.c_str(), 0755) < 0) { return_error(0x03); break; }
       set_cf(false);
       return CBRET_NONE;
     }
@@ -6570,10 +6601,11 @@ int run_program(const dosiz::Config &cfg) {
   control      = std::make_unique<::Config>(cmdline.get());
 
   if (cfg.headless) {
-    // On macOS, SDL's "offscreen" driver is EGL-based and cannot init without
-    // a real GL loader -- it fails to create any window even in texture mode.
-    // "dummy" creates no window at all, which is what we want anyway.
-#if defined(__APPLE__)
+    // On macOS and Windows, SDL's "offscreen" driver is EGL-based and
+    // cannot init without a real GL loader -- it fails to create any
+    // window even in texture mode.  "dummy" creates no window at all,
+    // which is what we want anyway.
+#if defined(__APPLE__) || defined(_WIN32)
     setenv("SDL_VIDEODRIVER", "dummy", 1);
 #else
     setenv("SDL_VIDEODRIVER", "offscreen", 1);

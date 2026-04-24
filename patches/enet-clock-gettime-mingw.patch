@@ -1,0 +1,16 @@
+diff --git a/src/libs/enet/include/enet.h b/src/libs/enet/include/enet.h
+--- a/src/libs/enet/include/enet.h
++++ b/src/libs/enet/include/enet.h
+@@ -4883,7 +4883,11 @@
+ // !
+ // =======================================================================//
+
+-    #ifdef _WIN32
++    // MSYS2 MinGW-w64's winpthreads provides clock_gettime in
++    // <pthread_time.h>, which gets pulled in transitively via libstdc++
++    // headers.  Gate enet's stub on that header's include guard so we
++    // don't redefine a function that already exists.
++    #if defined(_WIN32) && !defined(WIN_PTHREADS_TIME_H)
+         static LARGE_INTEGER getFILETIMEoffset() {
+             SYSTEMTIME s;
+             FILETIME f;

@@ -95,23 +95,56 @@ generated dosbox.conf.
 
 ## Building
 
-Prerequisites (Debian/Ubuntu):
+### Linux (Debian/Ubuntu)
 
 	sudo apt install build-essential cmake ninja-build meson pkg-config \
 	  libsdl2-dev libsdl2-net-dev libpng-dev libopusfile-dev \
 	  libspeexdsp-dev libfluidsynth-dev libslirp-dev libasound2-dev \
 	  libxi-dev libglib2.0-dev patch
 
-Then:
+### Windows 11 (MSYS2 / MinGW-w64)
 
-	make               # applies the dosbox-staging patch, builds dosbox
+Install MSYS2 (`winget install MSYS2.MSYS2 --location C:\s\msys64`
+recommended; any install location works as long as you use its
+`MSYS2 MINGW x64` shell).  Then from the MinGW x64 shell:
+
+	pacman -Sy --noconfirm --needed \
+	  mingw-w64-x86_64-toolchain mingw-w64-x86_64-cmake \
+	  mingw-w64-x86_64-meson    mingw-w64-x86_64-ninja \
+	  mingw-w64-x86_64-pkgconf  mingw-w64-x86_64-glib2 \
+	  mingw-w64-x86_64-iir      mingw-w64-x86_64-fluidsynth \
+	  mingw-w64-x86_64-munt-mt32emu mingw-w64-x86_64-libpng \
+	  mingw-w64-x86_64-libslirp mingw-w64-x86_64-opusfile \
+	  mingw-w64-x86_64-SDL2     mingw-w64-x86_64-SDL2_net \
+	  mingw-w64-x86_64-zlib     mingw-w64-x86_64-speexdsp \
+	  base-devel patch git
+
+All three patches in `patches/` (including the two Windows-only build
+fixups — a MinGW winpthreads `clock_gettime` collision in dosbox-staging's
+bundled enet, and a GL-probe guard in sdlmain so the headless "dummy"
+SDL driver doesn't abort at startup) are applied automatically by
+`make patch`.
+
+### macOS (Homebrew)
+
+	brew install cmake ninja meson pkg-config sdl2 sdl2_net glib \
+	  libpng opusfile speexdsp fluidsynth iir1
+
+### Build and smoke-test (all platforms)
+
+	make               # applies the dosbox-staging patches, builds dosbox
 	                   # libs, builds dosiz
 
-	build/dosiz --version   # should report the linked dosbox-staging version
-	build/dosiz tests/HELLO.COM
+	build/dosiz --version        # should report the linked dosbox-staging version
+	build/dosiz tests/HELLO.COM  # prints dosiz-hello-ok
 
 `make distclean` resets the dosbox-staging submodule to its upstream state
 and clears all build artifacts.
+
+On Windows the produced `build/dosiz.exe` links dynamically against the
+MinGW-w64 runtime plus SDL2, glib, fluidsynth, etc.  Run it from the same
+`MSYS2 MINGW x64` shell you built it in, or copy the required DLLs next
+to the executable (e.g. `ntldd -R build/dosiz.exe | grep mingw64`).
 
 ## Why
 

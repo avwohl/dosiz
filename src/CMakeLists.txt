@@ -14,6 +14,10 @@ endif()
 
 add_compile_options(-Wall -Wextra -Wno-unused-parameter)
 
+# Match dosbox-staging's meson build: 64-bit off_t on all platforms.
+# (cross.h static_asserts this, and MinGW defaults to 32-bit off_t.)
+add_compile_definitions(_FILE_OFFSET_BITS=64)
+
 # ---------------------------------------------------------------------------
 # dosbox-staging
 #
@@ -53,15 +57,27 @@ add_executable(dosiz
 
 # dosbox-staging searches $exe/../Resources (macOS) or $exe/resources
 # (other) for shaders, fonts, translation files, and Unicode
-# codepage-mapping tables.  Symlink the committed
-# dosbox-staging/Resources/ into BOTH spots so the lookup succeeds on
-# every platform without a full install.
+# codepage-mapping tables.  Place the committed dosbox-staging/Resources/
+# into BOTH spots so the lookup succeeds on every platform without a full
+# install.  Symlink on POSIX; copy on Windows where unprivileged symlink
+# creation requires Developer Mode.
+# dosbox-staging's meson build stages the installable tree under
+# <build>/resources (freedos-cpi, glshaders, translations, mapping tables,
+# etc.).  Upstream commit 52ee4e6f4 (~2024) moved these out of the
+# top-level Resources/ folder so they're now only generated files; point
+# our symlink/copy at the meson output.
+set(_dosiz_resource_src ${DB_BUILD}/resources)
+if(WIN32)
+  set(_dosiz_resource_cmd copy_directory)
+else()
+  set(_dosiz_resource_cmd create_symlink)
+endif()
 add_custom_command(TARGET dosiz POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E create_symlink
-          ${DB}/Resources
+  COMMAND ${CMAKE_COMMAND} -E ${_dosiz_resource_cmd}
+          ${_dosiz_resource_src}
           $<TARGET_FILE_DIR:dosiz>/resources
-  COMMAND ${CMAKE_COMMAND} -E create_symlink
-          ${DB}/Resources
+  COMMAND ${CMAKE_COMMAND} -E ${_dosiz_resource_cmd}
+          ${_dosiz_resource_src}
           $<TARGET_FILE_DIR:dosiz>/../Resources
   VERBATIM)
 
@@ -126,6 +142,26 @@ if(APPLE)
     BUILD_RPATH "${DB_BUILD}/subprojects/munt-libmt32emu_2_7_1"
     INSTALL_RPATH "@loader_path/../dosbox-staging/build/subprojects/munt-libmt32emu_2_7_1"
   )
+elseif(WIN32)
+  # Windows (MSYS2 MinGW-w64): all transitive deps come from pacman packages
+  # rather than the meson subprojects tree (zlib-ng, libpng, iir1, mt32emu
+  # are system packages).  SDL2's .pc file wires the app up as a GUI
+  # subsystem binary via -mwindows; we override with -mconsole so stdout
+  # is visible when invoked from a terminal.
+  pkg_check_modules(DB_DEPS REQUIRED
+    sdl2 SDL2_net fluidsynth slirp speexdsp opusfile
+    mt32emu libpng zlib iir glib-2.0
+  )
+  target_link_libraries(dosiz PRIVATE
+    -Wl,--start-group
+    ${DB_ARCHIVES}
+    -Wl,--end-group
+    ${DB_DEPS_LIBRARIES}
+    opengl32 winmm ws2_32 iphlpapi imm32 version setupapi
+    "-mconsole"
+  )
+  target_include_directories(dosiz PRIVATE ${DB_DEPS_INCLUDE_DIRS})
+  target_link_directories(dosiz PRIVATE ${DB_DEPS_LIBRARY_DIRS})
 else()
   # Linux: GNU ld + --start-group for circular archive refs.
   target_link_libraries(dosiz PRIVATE
