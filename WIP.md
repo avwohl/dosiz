@@ -20,7 +20,7 @@
 > build (SDL2/glib/meson deps, the `patches/` set, the submodule), all of
 > which is gone. And emu88 is no longer "in-tree": since `8e507aa` it is read
 > from a sibling **qxDOS** checkout and is owned by that repository. For the
-> current architecture see `README.md`, `CLAUDE.md` and
+> current architecture see `README.md`, `docs/architecture.md`, `CLAUDE.md` and
 > `docs/emu88-cpu-backend.md` — and see `todo.txt` first, because several
 > statements in those files are themselves wrong and are listed there.
 

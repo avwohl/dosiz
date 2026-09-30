@@ -174,7 +174,7 @@ same author's code, so its license for dosiz is the author's to set; confirm
 the intended terms before relying on it" - qxDOS/RIGHTS.md has since answered
 that (GPL v3 or later, inherited from qxDOS) - and the same file says "re-run
 dosiz's own 23 DPMI fixtures" when `ls tests/DPMI_*.COM | wc -l` is 25, a
-number README.md already gets right.
+number docs/architecture.md (moved there from README.md) already gets right.
 
 - 41 committed fixtures are exercised only by the workflow that cannot run.
 tests/ holds 80 .COM and .EXE fixtures; walking each basename through both

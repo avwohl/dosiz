@@ -32,3 +32,6 @@
   fixes (FUCOMPP, the `pending_seg_idx` segment-cache selection, the unmasked
   linear address for the VESA LFB aperture, and `#UD` instead of a fatal halt)
   that were never ported back. That is why there is now a single copy.
+
+## README stays short
+README.md is at most 150 lines. New detail goes in docs/<topic>.md with a one-line link from the README; never add sections to the README.
